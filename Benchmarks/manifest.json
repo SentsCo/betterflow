@@ -1,0 +1,26 @@
+{
+  "cases" : [
+    {
+      "audio" : "audio\/guided-terms.aiff",
+      "id" : "guided-terms",
+      "reference" : "Zach and Sara use WorkflowDog to manage a TanStack application backed by Postgres."
+    },
+    {
+      "audio" : "audio\/guided-terms-in-context.aiff",
+      "id" : "guided-terms-in-context",
+      "reference" : "Sara asked Zach whether WorkflowDog should move its TanStack data layer from SQLite to Postgres."
+    },
+    {
+      "audio" : "audio\/negative-control.aiff",
+      "id" : "negative-control",
+      "reference" : "The design review starts tomorrow morning, and everyone should bring their latest notes."
+    }
+  ],
+  "guideWords" : [
+    "Zach",
+    "Sara",
+    "WorkflowDog",
+    "TanStack",
+    "Postgres"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "guideWords": ["Zach", "Sara", "WorkflowDog", "TanStack", "Postgres"],
+  "cases": [
+    {
+      "id": "guided-terms",
+      "audio": "audio/guided-terms.aiff",
+      "reference": "Zach and Sara use WorkflowDog to manage a TanStack application backed by Postgres."
+    }
+  ]
+}

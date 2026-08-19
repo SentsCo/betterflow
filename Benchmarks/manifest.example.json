@@ -1,0 +1,21 @@
+{
+  "guideWords" : [
+    "Zach",
+    "Sara",
+    "WorkflowDog",
+    "TanStack",
+    "Postgres"
+  ],
+  "cases" : [
+    {
+      "id" : "guided-terms",
+      "audio" : "audio/guided-terms.caf",
+      "reference" : "Zach and Sara use WorkflowDog to manage a TanStack application backed by Postgres."
+    },
+    {
+      "id" : "negative-control",
+      "audio" : "audio/negative-control.caf",
+      "reference" : "The design review starts tomorrow morning, and everyone should bring their latest notes."
+    }
+  ]
+}
