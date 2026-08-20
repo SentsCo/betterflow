@@ -34,7 +34,18 @@ enum AudioDeviceCatalog {
     priorityEnabled: Bool,
     priority: [String]
   ) -> AudioInputDevice? {
-    let devices = inputDevices()
+    selectedDevice(
+      in: inputDevices(),
+      priorityEnabled: priorityEnabled,
+      priority: priority
+    )
+  }
+
+  static func selectedDevice(
+    in devices: [AudioInputDevice],
+    priorityEnabled: Bool,
+    priority: [String]
+  ) -> AudioInputDevice? {
     if priorityEnabled,
       let preferred = priority.compactMap({ uid in devices.first { $0.id == uid } })
         .first
@@ -117,4 +128,51 @@ enum AudioDeviceCatalog {
     return value?.takeUnretainedValue() as String?
   }
 
+}
+
+final class AudioDeviceChangeObserver: @unchecked Sendable {
+  private struct Registration {
+    var address: AudioObjectPropertyAddress
+    let listener: AudioObjectPropertyListenerBlock
+  }
+
+  private let queue = DispatchQueue(label: "com.zachsents.betterflow.audio-device-changes")
+  private var registrations: [Registration] = []
+
+  init(onChange: @escaping @MainActor @Sendable () -> Void) {
+    let selectors = [
+      kAudioHardwarePropertyDevices,
+      kAudioHardwarePropertyDefaultInputDevice,
+    ]
+    registrations = selectors.compactMap { selector in
+      var address = AudioObjectPropertyAddress(
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+      )
+      let listener: AudioObjectPropertyListenerBlock = { _, _ in
+        Task { @MainActor in onChange() }
+      }
+      guard
+        AudioObjectAddPropertyListenerBlock(
+          AudioObjectID(kAudioObjectSystemObject),
+          &address,
+          queue,
+          listener
+        ) == noErr
+      else { return nil }
+      return Registration(address: address, listener: listener)
+    }
+  }
+
+  deinit {
+    for var registration in registrations {
+      AudioObjectRemovePropertyListenerBlock(
+        AudioObjectID(kAudioObjectSystemObject),
+        &registration.address,
+        queue,
+        registration.listener
+      )
+    }
+  }
 }

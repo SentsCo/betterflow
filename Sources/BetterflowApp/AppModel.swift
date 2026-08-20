@@ -18,10 +18,13 @@ final class AppModel: ObservableObject {
   @Published private(set) var microphoneGranted = AppPermission.microphoneGranted
   @Published private(set) var accessibilityGranted = AppPermission.accessibilityGranted
   @Published private(set) var screenRecordingGranted = AppPermission.screenRecordingGranted
+  @Published private(set) var audioDevices: [AudioInputDevice] = []
 
   private var overlay: OverlayController?
   private var settingsWindow: BetterflowSettingsWindowController?
   private var hotkey: HotkeyMonitor?
+  private var audioDeviceObserver: AudioDeviceChangeObserver?
+  private var audioDeviceRefreshTask: Task<Void, Never>?
   private var cancellables: Set<AnyCancellable> = []
   private var started = false
 
@@ -86,14 +89,14 @@ final class AppModel: ObservableObject {
       .store(in: &cancellables)
     screenshots.onCopied = { [sounds] in sounds.play(.textCopied) }
     screenshots.onFailure = { [weak self] message in self?.showScreenshotError(message) }
+    audioDeviceObserver = AudioDeviceChangeObserver { [weak self] in
+      self?.refreshAudioDevices()
+    }
     hotkey?.start()
     modelDownloads.refresh(prepareSelectedModel: true)
     cleanupModelDownloads.refresh(prepareSelectedModel: true)
     refreshPermissions()
-    Timer.publish(every: 0.75, on: .main, in: .common)
-      .autoconnect()
-      .sink { [weak self] _ in self?.refreshPermissions() }
-      .store(in: &cancellables)
+    refreshAudioDevices()
     NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
       .sink { [weak self] _ in self?.refreshPermissions() }
       .store(in: &cancellables)
@@ -156,7 +159,21 @@ final class AppModel: ObservableObject {
     }
   }
 
+  func refreshAudioDevices() {
+    audioDeviceRefreshTask?.cancel()
+    audioDeviceRefreshTask = Task {
+      let devices = await Task.detached(priority: .utility) {
+        AudioDeviceCatalog.inputDevices()
+      }.value
+      guard !Task.isCancelled else { return }
+      audioDevices = devices
+      settings.rememberMicrophones(devices)
+      audioDeviceRefreshTask = nil
+    }
+  }
+
   func quit() {
+    audioDeviceRefreshTask?.cancel()
     hotkey?.stop()
     screenshots.cancel()
     coordinator.shutdown()

@@ -8,6 +8,22 @@ private let microphoneInputCallback: AudioQueueInputCallback = {
   capture.receive(buffer: buffer, queue: queue)
 }
 
+actor MicrophoneCaptureLifecycle {
+  private let capture: MicrophoneCapture
+
+  init(capture: MicrophoneCapture) {
+    self.capture = capture
+  }
+
+  func start(deviceUID: String?) throws -> AsyncStream<Int> {
+    try capture.start(deviceUID: deviceUID)
+  }
+
+  func stop() -> [Float] {
+    capture.stop()
+  }
+}
+
 final class MicrophoneCapture: @unchecked Sendable {
   static let sampleRate = 16_000.0
   static let bufferDurationSeconds = 0.03

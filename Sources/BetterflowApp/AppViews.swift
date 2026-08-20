@@ -54,6 +54,7 @@ struct MenuContentView: View {
 
   private var microphoneName: String {
     AudioDeviceCatalog.selectedDevice(
+      in: model.audioDevices,
       priorityEnabled: model.settings.microphonePriorityEnabled,
       priority: model.settings.microphonePriority
     )?.name ?? "System Default"
@@ -577,7 +578,6 @@ private struct VocabularySettingsView: View {
 private struct AudioSettingsView: View {
   @ObservedObject var model: AppModel
   @ObservedObject var settings: AppSettings
-  @State private var devicesByID: [String: AudioInputDevice] = [:]
 
   var body: some View {
     Form {
@@ -646,22 +646,15 @@ private struct AudioSettingsView: View {
       }
     }
     .formStyle(.grouped)
-    .onAppear { refreshDevices() }
-    .onChange(of: model.microphoneGranted) { _, _ in refreshDevices() }
-    .onChange(of: settings.microphonePriorityEnabled) { _, _ in refreshDevices() }
-    .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
-      refreshDevices()
-    }
+    .onAppear { model.refreshAudioDevices() }
   }
 
   private var systemDefault: AudioInputDevice? {
-    devicesByID.values.first(where: \.isDefault)
+    model.audioDevices.first(where: \.isDefault)
   }
 
-  private func refreshDevices() {
-    let devices = AudioDeviceCatalog.inputDevices()
-    devicesByID = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0) })
-    settings.rememberMicrophones(devices)
+  private var devicesByID: [String: AudioInputDevice] {
+    Dictionary(uniqueKeysWithValues: model.audioDevices.map { ($0.id, $0) })
   }
 
   private func movePriority(_ index: Int, by delta: Int) {

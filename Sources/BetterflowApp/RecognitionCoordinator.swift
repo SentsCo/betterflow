@@ -190,7 +190,8 @@ final class RecognitionCoordinator: ObservableObject {
   private let history: TranscriptionHistory
   private let sounds: AppSoundPlayer
   private let cleanupRuntime: TranscriptCleanupRuntime
-  private let capture = MicrophoneCapture()
+  private let capture: MicrophoneCapture
+  private let captureLifecycle: MicrophoneCaptureLifecycle
   private let runtime = RecognitionRuntime()
   private var modelPreparationTask: Task<Void, Never>?
   private var insertionTargetTask: Task<Void, Never>?
@@ -212,10 +213,13 @@ final class RecognitionCoordinator: ObservableObject {
     sounds: AppSoundPlayer,
     cleanupRuntime: TranscriptCleanupRuntime
   ) {
+    let capture = MicrophoneCapture()
     self.settings = settings
     self.history = history
     self.sounds = sounds
     self.cleanupRuntime = cleanupRuntime
+    self.capture = capture
+    captureLifecycle = MicrophoneCaptureLifecycle(capture: capture)
   }
 
   func prepareSelectedModel() {
@@ -324,6 +328,7 @@ final class RecognitionCoordinator: ObservableObject {
       returnAfterInsertion = false
       onOverlayVisibility?(false)
       onKeyboardModeChange?(.none)
+      beginBackgroundCleanup()
       return
     }
     recording = false
@@ -334,12 +339,13 @@ final class RecognitionCoordinator: ObservableObject {
     liveTask = nil
     audioMeterTask?.cancel()
     audioMeterTask = nil
-    let samples = capture.stop()
     audioMeter.reset()
     state = .finalizing
     onKeyboardModeChange?(.finalizing)
     let session = currentSession
+    let captureLifecycle = captureLifecycle
     finalizationTask = Task { [weak self] in
+      let samples = await captureLifecycle.stop()
       await pendingStartup?.value
       await pendingLiveUpdate?.value
       guard !Task.isCancelled else { return }
@@ -411,10 +417,11 @@ final class RecognitionCoordinator: ObservableObject {
     finalizationTask = nil
     insertionTargetTask?.cancel()
     insertionTargetTask = nil
-    capture.stop()
     insertionTarget = nil
     onKeyboardModeChange?(.none)
+    let captureLifecycle = captureLifecycle
     Task {
+      _ = await captureLifecycle.stop()
       await pendingStartup?.value
       await pendingLiveUpdate?.value
       await runtime.close()
@@ -444,7 +451,8 @@ final class RecognitionCoordinator: ObservableObject {
       priority: settings.microphonePriority
     )
     do {
-      let audioUpdates = try capture.start(deviceUID: device?.id)
+      let audioUpdates = try await captureLifecycle.start(deviceUID: device?.id)
+      guard dictationActive, currentSession == session else { return }
       selectedMicrophone = device?.name ?? "System Default"
       recording = true
       state = .listening
@@ -634,12 +642,12 @@ final class RecognitionCoordinator: ObservableObject {
   }
 
   private func beginBackgroundCleanup() {
-    let capture = capture
+    let captureLifecycle = captureLifecycle
     let runtime = runtime
     let pendingCleanup = runtimeCancellationTask
     runtimeCancellationTask = Task.detached(priority: .utility) {
       await pendingCleanup?.value
-      _ = capture.stop()
+      _ = await captureLifecycle.stop()
       await runtime.cancelLive()
     }
   }
@@ -648,7 +656,6 @@ final class RecognitionCoordinator: ObservableObject {
     guard currentSession == session else { return }
     dictationActive = false
     recording = false
-    capture.stop()
     liveTask?.cancel()
     liveTask = nil
     audioMeterTask?.cancel()
@@ -662,6 +669,7 @@ final class RecognitionCoordinator: ObservableObject {
     state = .error(message)
     onOverlayVisibility?(false)
     onKeyboardModeChange?(.none)
+    beginBackgroundCleanup()
   }
 
   private func finishWithoutText(session: UUID) {
