@@ -24,8 +24,8 @@ fi
 cp "$archive" "$temporary_dir/"
 printf '%s' "$private_key" | "$sparkle_tool" \
   --ed-key-file - \
-  --download-url-prefix "https://github.com/zachsents/betterflow/releases/download/$tag/" \
-  --link "https://github.com/zachsents/betterflow" \
+  --download-url-prefix "https://github.com/SentsCo/betterflow/releases/download/$tag/" \
+  --link "https://github.com/SentsCo/betterflow" \
   --maximum-versions 1 \
   --maximum-deltas 0 \
   -o "$appcast" \

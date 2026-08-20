@@ -33,7 +33,7 @@
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>SUFeedURL</key>
-  <string>https://github.com/zachsents/betterflow/releases/latest/download/appcast.xml</string>
+  <string>https://github.com/SentsCo/betterflow/releases/latest/download/appcast.xml</string>
   <key>SUPublicEDKey</key>
   <string>LPcvS/kxwV+8I+34Enq5JHz9Svw5YqZG0QocCbI58Vc=</string>
 </dict>

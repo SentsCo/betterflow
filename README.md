@@ -2,7 +2,7 @@
 
 Native macOS voice dictation and annotated screenshots.
 
-[Download the latest release](https://github.com/zachsents/betterflow/releases/latest). Betterflow requires Apple Silicon and macOS 14 or newer. Updates are delivered through Sparkle.
+[Download the latest release](https://github.com/SentsCo/betterflow/releases/latest). Betterflow requires Apple Silicon and macOS 14 or newer. Updates are delivered through Sparkle.
 
 ## Features
 
