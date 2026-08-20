@@ -170,6 +170,7 @@ final class RecognitionCoordinator: ObservableObject {
   private let capture = MicrophoneCapture()
   private let runtime = RecognitionRuntime()
   private var modelPreparationTask: Task<Void, Never>?
+  private var insertionTargetTask: Task<Void, Never>?
   private var startupTask: Task<Void, Never>?
   private var liveTask: Task<Void, Never>?
   private var audioMeterTask: Task<Void, Never>?
@@ -252,7 +253,24 @@ final class RecognitionCoordinator: ObservableObject {
     onKeyboardModeChange?(.recording)
     let session = UUID()
     currentSession = session
-    insertionTarget = TextInserter.captureTarget()
+    insertionTargetTask?.cancel()
+    insertionTargetTask = nil
+    insertionTarget = TextInserter.captureTarget(context: "recording-start")
+    if insertionTarget == nil {
+      insertionTargetTask = Task { [weak self] in
+        let retryDelays = [40, 160, 800, 1_200]
+        for (index, delay) in retryDelays.enumerated() {
+          try? await Task.sleep(for: .milliseconds(delay))
+          guard !Task.isCancelled, let self, self.currentSession == session else { return }
+          if let target = TextInserter.captureTarget(context: "recording-retry-\(index + 1)") {
+            self.insertionTarget = target
+            self.insertionTargetTask = nil
+            return
+          }
+        }
+        self?.insertionTargetTask = nil
+      }
+    }
     cleanupEnabled = settings.cleanupEnabledByDefault
     cleanupModelForSession = settings.cleanupModel
     returnAfterInsertion = false
@@ -272,6 +290,8 @@ final class RecognitionCoordinator: ObservableObject {
       startupTask?.cancel()
       startupTask = nil
       if state == .preparing { state = .idle }
+      insertionTargetTask?.cancel()
+      insertionTargetTask = nil
       insertionTarget = nil
       returnAfterInsertion = false
       onOverlayVisibility?(false)
@@ -361,6 +381,8 @@ final class RecognitionCoordinator: ObservableObject {
     audioMeterTask?.cancel()
     finalizationTask?.cancel()
     finalizationTask = nil
+    insertionTargetTask?.cancel()
+    insertionTargetTask = nil
     capture.stop()
     insertionTarget = nil
     onKeyboardModeChange?(.none)
@@ -513,6 +535,8 @@ final class RecognitionCoordinator: ObservableObject {
         rawText: appliedCleanup ? rawTranscript : nil
       )
       let target = insertionTarget
+      insertionTargetTask?.cancel()
+      insertionTargetTask = nil
       let delivery = TextDelivery.deliver(deliveredTranscript, into: target)
       insertionTarget = nil
       let shouldSendReturn = returnAfterInsertion
@@ -561,6 +585,8 @@ final class RecognitionCoordinator: ObservableObject {
     audioMeterTask = nil
     finalizationTask?.cancel()
     finalizationTask = nil
+    insertionTargetTask?.cancel()
+    insertionTargetTask = nil
     let target = insertionTarget
     insertionTarget = nil
     returnAfterInsertion = false
@@ -592,6 +618,8 @@ final class RecognitionCoordinator: ObservableObject {
     audioMeterTask?.cancel()
     audioMeterTask = nil
     insertionTarget = nil
+    insertionTargetTask?.cancel()
+    insertionTargetTask = nil
     returnAfterInsertion = false
     transcript = ""
     audioMeter.reset()
@@ -604,6 +632,8 @@ final class RecognitionCoordinator: ObservableObject {
     guard currentSession == session else { return }
     recording = false
     insertionTarget = nil
+    insertionTargetTask?.cancel()
+    insertionTargetTask = nil
     returnAfterInsertion = false
     transcript = ""
     audioMeter.reset()

@@ -2,8 +2,13 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import OSLog
 
 let betterflowSyntheticKeyEventMarker: Int64 = 0x4245_5454_4552_464C
+private let textInsertionLogger = Logger(
+  subsystem: "com.zachsents.betterflow",
+  category: "TextInsertion"
+)
 
 struct TextInsertionTarget {
   fileprivate let element: AXUIElement
@@ -11,62 +16,188 @@ struct TextInsertionTarget {
 
 @MainActor
 enum TextInserter {
-  static func captureTarget() -> TextInsertionTarget? {
-    guard AXIsProcessTrusted() else { return nil }
+  static func captureTarget(context: String) -> TextInsertionTarget? {
+    guard AXIsProcessTrusted() else {
+      textInsertionLogger.error(
+        "Capture [\(context, privacy: .public)] failed: Accessibility is not granted"
+      )
+      return nil
+    }
+
+    let frontmostApplication = NSWorkspace.shared.frontmostApplication
+    let frontmostPID = frontmostApplication?.processIdentifier ?? 0
+    let frontmostBundle = frontmostApplication?.bundleIdentifier ?? "unknown"
+    textInsertionLogger.info(
+      "Capture [\(context, privacy: .public)] began: frontmost pid=\(frontmostPID) bundle=\(frontmostBundle, privacy: .public), Betterflow pid=\(ProcessInfo.processInfo.processIdentifier) active=\(NSApp.isActive) keyWindow=\(NSApp.keyWindow != nil)"
+    )
+
     let system = AXUIElementCreateSystemWide()
     var focusedValue: CFTypeRef?
-    guard
-      AXUIElementCopyAttributeValue(
-        system,
+    let focusedResult = AXUIElementCopyAttributeValue(
+      system,
+      kAXFocusedUIElementAttribute as CFString,
+      &focusedValue
+    )
+    var focusedElement: AXUIElement?
+    var captureSource = "system"
+    if focusedResult == .success, let focusedValue {
+      focusedElement = unsafeDowncast(focusedValue, to: AXUIElement.self)
+    } else {
+      guard let frontmostApplication else {
+        textInsertionLogger.error(
+          "Capture [\(context, privacy: .public)] failed: system result=\(focusedResult.rawValue), no frontmost app"
+        )
+        return nil
+      }
+      let applicationElement = AXUIElementCreateApplication(
+        frontmostApplication.processIdentifier
+      )
+      var applicationFocusedValue: CFTypeRef?
+      var applicationResult = AXUIElementCopyAttributeValue(
+        applicationElement,
         kAXFocusedUIElementAttribute as CFString,
-        &focusedValue
-      ) == .success,
-      let focusedValue
-    else { return nil }
-    let element = unsafeDowncast(focusedValue, to: AXUIElement.self)
-    guard isEditable(element) else { return nil }
-    return TextInsertionTarget(element: element)
+        &applicationFocusedValue
+      )
+      if applicationResult != .success || applicationFocusedValue == nil {
+        let applicationRole = attributeString(kAXRoleAttribute, of: applicationElement)
+        applicationFocusedValue = nil
+        applicationResult = AXUIElementCopyAttributeValue(
+          applicationElement,
+          kAXFocusedUIElementAttribute as CFString,
+          &applicationFocusedValue
+        )
+        textInsertionLogger.info(
+          "Capture [\(context, privacy: .public)] accessibility role probe: role=\(applicationRole, privacy: .public), focusedElementResult=\(applicationResult.rawValue)"
+        )
+      }
+      if applicationResult == .success, let applicationFocusedValue {
+        captureSource = "application"
+        focusedElement = unsafeDowncast(applicationFocusedValue, to: AXUIElement.self)
+      } else {
+        var focusedWindowValue: CFTypeRef?
+        let focusedWindowResult = AXUIElementCopyAttributeValue(
+          applicationElement,
+          kAXFocusedWindowAttribute as CFString,
+          &focusedWindowValue
+        )
+        var windowFocusedResult: AXError?
+        if focusedWindowResult == .success, let focusedWindowValue {
+          let focusedWindow = unsafeDowncast(focusedWindowValue, to: AXUIElement.self)
+          var windowFocusedValue: CFTypeRef?
+          let result = AXUIElementCopyAttributeValue(
+            focusedWindow,
+            kAXFocusedUIElementAttribute as CFString,
+            &windowFocusedValue
+          )
+          windowFocusedResult = result
+          if result == .success, let windowFocusedValue {
+            captureSource = "focused-window"
+            focusedElement = unsafeDowncast(windowFocusedValue, to: AXUIElement.self)
+          } else {
+            textInsertionLogger.error(
+              "Capture [\(context, privacy: .public)] focused window has no focused element: result=\(result.rawValue), window=\(summary(of: focusedWindow), privacy: .public), attributes=\(attributeNames(of: focusedWindow), privacy: .public)"
+            )
+          }
+        }
+        guard focusedElement != nil else {
+          let windowFocusedCode = windowFocusedResult?.rawValue ?? Int32.min
+          textInsertionLogger.error(
+            "Capture [\(context, privacy: .public)] failed: system=\(focusedResult.rawValue), application=\(applicationResult.rawValue), focusedWindow=\(focusedWindowResult.rawValue), windowFocusedElement=\(windowFocusedCode), applicationAttributes=\(attributeNames(of: applicationElement), privacy: .public)"
+          )
+          return nil
+        }
+      }
+    }
+
+    guard let focusedElement else {
+      textInsertionLogger.fault(
+        "Capture [\(context, privacy: .public)] reached an impossible empty target"
+      )
+      return nil
+    }
+    textInsertionLogger.info(
+      "Capture [\(context, privacy: .public)] found target via \(captureSource, privacy: .public): \(summary(of: focusedElement), privacy: .public)"
+    )
+    guard isEditable(focusedElement) else {
+      textInsertionLogger.error(
+        "Capture [\(context, privacy: .public)] rejected non-editable target: \(summary(of: focusedElement), privacy: .public), attributes=\(attributeNames(of: focusedElement), privacy: .public)"
+      )
+      return nil
+    }
+    return TextInsertionTarget(element: focusedElement)
   }
 
   static func insert(_ text: String, into capturedTarget: TextInsertionTarget?) throws {
     guard !text.isEmpty else { return }
-    guard AXIsProcessTrusted() else { throw TextInsertionError.accessibilityDenied }
+    guard AXIsProcessTrusted() else {
+      textInsertionLogger.error("Insertion failed: Accessibility is not granted")
+      throw TextInsertionError.accessibilityDenied
+    }
 
-    guard let target = capturedTarget else { throw TextInsertionError.noTextDestination }
+    guard let target = capturedTarget else {
+      textInsertionLogger.error("Insertion failed: no target was captured at recording start")
+      throw TextInsertionError.noTextDestination
+    }
+    textInsertionLogger.info(
+      "Insertion began with captured target: \(summary(of: target.element), privacy: .public)"
+    )
 
-    if let currentTarget = captureTarget(), CFEqual(currentTarget.element, target.element) {
-      try postUnicode(text)
-      return
+    if let currentTarget = captureTarget(context: "delivery") {
+      let sameTarget = CFEqual(currentTarget.element, target.element)
+      textInsertionLogger.info(
+        "Delivery focus comparison: sameTarget=\(sameTarget), current=\(summary(of: currentTarget.element), privacy: .public)"
+      )
+      if sameTarget {
+        textInsertionLogger.info("Inserting through keyboard events into the unchanged target")
+        try postUnicode(text)
+        textInsertionLogger.info("Posted Unicode keyboard events successfully")
+        return
+      }
+    } else {
+      textInsertionLogger.error("Delivery could not resolve the currently focused editable target")
     }
 
     var selectedTextIsSettable = DarwinBoolean(false)
-    if AXUIElementIsAttributeSettable(
+    let settableResult = AXUIElementIsAttributeSettable(
       target.element,
       kAXSelectedTextAttribute as CFString,
       &selectedTextIsSettable
-    ) == .success,
-      selectedTextIsSettable.boolValue,
-      AXUIElementSetAttributeValue(
+    )
+    textInsertionLogger.info(
+      "Captured-target fallback check: settableResult=\(settableResult.rawValue), selectedTextSettable=\(selectedTextIsSettable.boolValue), target=\(summary(of: target.element), privacy: .public)"
+    )
+    if settableResult == .success, selectedTextIsSettable.boolValue {
+      let insertionResult = AXUIElementSetAttributeValue(
         target.element,
         kAXSelectedTextAttribute as CFString,
         text as CFTypeRef
-      ) == .success
-    {
-      return
+      )
+      if insertionResult == .success {
+        textInsertionLogger.info("Inserted through the captured target's selected-text attribute")
+        return
+      }
+      textInsertionLogger.error(
+        "Captured-target selected-text insertion failed: result=\(insertionResult.rawValue)"
+      )
     }
 
+    textInsertionLogger.error("Insertion failed: captured target is no longer writable")
     throw TextInsertionError.noTextDestination
   }
 
   static func pressReturn(into capturedTarget: TextInsertionTarget?) throws {
     guard AXIsProcessTrusted() else { throw TextInsertionError.accessibilityDenied }
-    guard let capturedTarget, let currentTarget = captureTarget(),
+    guard let capturedTarget, let currentTarget = captureTarget(context: "queued-return"),
       CFEqual(currentTarget.element, capturedTarget.element)
-    else { throw TextInsertionError.noTextDestination }
+    else {
+      textInsertionLogger.error("Queued Return failed because the captured target lost focus")
+      throw TextInsertionError.noTextDestination
+    }
 
     let (keyDown, keyUp) = try makeKeyEvents(virtualKey: 36)
     keyDown.post(tap: .cghidEventTap)
     keyUp.post(tap: .cghidEventTap)
+    textInsertionLogger.info("Posted queued Return successfully")
   }
 
   private static func postUnicode(_ text: String) throws {
@@ -147,6 +278,37 @@ enum TextInserter {
     else { return false }
     return role == kAXTextFieldRole || role == kAXTextAreaRole || role == kAXComboBoxRole
   }
+
+  private static func summary(of element: AXUIElement) -> String {
+    var processID = pid_t()
+    let pidResult = AXUIElementGetPid(element, &processID)
+    let bundle = NSRunningApplication(processIdentifier: processID)?.bundleIdentifier ?? "unknown"
+    var selectedTextIsSettable = DarwinBoolean(false)
+    let selectedTextResult = AXUIElementIsAttributeSettable(
+      element,
+      kAXSelectedTextAttribute as CFString,
+      &selectedTextIsSettable
+    )
+    return "pid=\(processID) pidResult=\(pidResult.rawValue) bundle=\(bundle) role=\(attributeString(kAXRoleAttribute, of: element)) subrole=\(attributeString(kAXSubroleAttribute, of: element)) hash=\(CFHash(element)) selectedTextResult=\(selectedTextResult.rawValue) selectedTextSettable=\(selectedTextIsSettable.boolValue)"
+  }
+
+  private static func attributeString(_ attribute: String, of element: AXUIElement) -> String {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+      let value = value as? String
+    else { return "unavailable" }
+    return value
+  }
+
+  private static func attributeNames(of element: AXUIElement) -> String {
+    var names: CFArray?
+    let result = AXUIElementCopyAttributeNames(element, &names)
+    guard result == .success, let names = names as? [String] else {
+      return "unavailable(result=\(result.rawValue))"
+    }
+    return names.sorted().joined(separator: ",")
+  }
+
 }
 
 enum TextDeliveryResult: Equatable {
@@ -161,6 +323,9 @@ enum TextDelivery {
       try TextInserter.insert(text, into: target)
       return .inserted
     } catch {
+      textInsertionLogger.error(
+        "Delivery fell back to clipboard: \(String(describing: error), privacy: .public)"
+      )
       copy(text)
       return .copied
     }
