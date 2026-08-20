@@ -1,6 +1,6 @@
 # Betterflow
 
-Native macOS voice dictation with local models, a live self-correcting transcript, guide words, and optional on-device cleanup.
+Native macOS voice dictation and annotated screenshots.
 
 ## Features
 
@@ -9,6 +9,7 @@ Native macOS voice dictation with local models, a live self-correcting transcrip
 - Choose from nine local or Apple-managed engines with model-native guide words.
 - Optionally clean up transcripts on-device with Apple Foundation Models or Qwen3 0.6B.
 - Keep history, fall back to the clipboard, and configure a persistent microphone priority list.
+- Draw over a frozen desktop, then copy a selected area or full display to the clipboard.
 
 ## Build
 
@@ -29,5 +30,7 @@ On first launch, grant Microphone and Accessibility access. Betterflow then runs
 - `Command-Enter`: immediately insert the current transcript
 - `Escape`: cancel
 - `Z`: toggle cleanup for the current transcription
+- `Command-Shift-2`: annotate a screenshot
+- In screenshot mode: `P` selects pen, `A` arrow, `R` rectangle, `Return` selects an area, `Command-Return` copies the display, `Command-Z` undoes, and `Escape` cancels
 
 The repository also includes `betterflow-bench` for comparing recognition engines. Model downloads and results stay outside Git.

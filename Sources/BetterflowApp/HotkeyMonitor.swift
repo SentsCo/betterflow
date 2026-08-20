@@ -38,14 +38,28 @@ func dictationKeyCommand(
   }
 }
 
-private extension DictationKey {
-  var eventFlag: CGEventFlags {
+extension DictationKey {
+  fileprivate var eventFlag: CGEventFlags {
     switch self {
     case .leftCommand, .rightCommand: .maskCommand
     case .leftOption, .rightOption: .maskAlternate
     case .leftControl, .rightControl: .maskControl
     case .function: .maskSecondaryFn
     }
+  }
+}
+
+extension ScreenshotShortcut {
+  fileprivate var eventFlags: CGEventFlags {
+    CGEventFlags(rawValue: UInt64(modifierFlagsRawValue))
+  }
+
+  fileprivate func matches(keyCode: Int64, flags: CGEventFlags) -> Bool {
+    let modifierMask: CGEventFlags = [
+      .maskCommand, .maskControl, .maskAlternate, .maskShift, .maskSecondaryFn,
+    ]
+    return keyCode == Int64(self.keyCode)
+      && flags.intersection(modifierMask) == eventFlags
   }
 }
 
@@ -63,6 +77,8 @@ final class HotkeyMonitor {
   init(
     key: @escaping () -> DictationKey,
     onToggle: @escaping () -> Void,
+    screenshotShortcut: ScreenshotShortcut,
+    onScreenshot: @escaping @MainActor @Sendable () -> Void,
     onFinish: @escaping @MainActor @Sendable () -> Void,
     onQueueReturn: @escaping @MainActor @Sendable () -> Void,
     onInsertCurrent: @escaping @MainActor @Sendable () -> Void,
@@ -72,6 +88,8 @@ final class HotkeyMonitor {
     self.key = key
     self.onToggle = onToggle
     commandInterceptor = KeyCommandInterceptor(
+      screenshotShortcut: screenshotShortcut,
+      onScreenshot: onScreenshot,
       onFinish: onFinish,
       onQueueReturn: onQueueReturn,
       onInsertCurrent: onInsertCurrent,
@@ -110,6 +128,10 @@ final class HotkeyMonitor {
 
   func setDictationMode(_ mode: DictationKeyboardMode) {
     commandInterceptor.setMode(mode, ignoring: key().eventFlag)
+  }
+
+  func setScreenshotShortcut(_ shortcut: ScreenshotShortcut) {
+    commandInterceptor.setScreenshotShortcut(shortcut)
   }
 
   private func startCommandInterceptor() {
@@ -166,6 +188,7 @@ final class HotkeyMonitor {
 
 private final class KeyCommandInterceptor: @unchecked Sendable {
   private let lock = NSLock()
+  private let onScreenshot: @MainActor @Sendable () -> Void
   private let onFinish: @MainActor @Sendable () -> Void
   private let onQueueReturn: @MainActor @Sendable () -> Void
   private let onInsertCurrent: @MainActor @Sendable () -> Void
@@ -173,15 +196,20 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
   private let onCancel: @MainActor @Sendable () -> Void
   private var mode = DictationKeyboardMode.none
   private var ignoredModifierFlags: CGEventFlags = []
+  private var screenshotShortcut: ScreenshotShortcut
   private var swallowedKeyCodes: Set<Int64> = []
 
   init(
+    screenshotShortcut: ScreenshotShortcut,
+    onScreenshot: @escaping @MainActor @Sendable () -> Void,
     onFinish: @escaping @MainActor @Sendable () -> Void,
     onQueueReturn: @escaping @MainActor @Sendable () -> Void,
     onInsertCurrent: @escaping @MainActor @Sendable () -> Void,
     onToggleCleanup: @escaping @MainActor @Sendable () -> Void,
     onCancel: @escaping @MainActor @Sendable () -> Void
   ) {
+    self.screenshotShortcut = screenshotShortcut
+    self.onScreenshot = onScreenshot
     self.onFinish = onFinish
     self.onQueueReturn = onQueueReturn
     self.onInsertCurrent = onInsertCurrent
@@ -196,6 +224,10 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
     }
   }
 
+  func setScreenshotShortcut(_ shortcut: ScreenshotShortcut) {
+    lock.withLock { screenshotShortcut = shortcut }
+  }
+
   func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
     if event.getIntegerValueField(.eventSourceUserData)
       == betterflowSyntheticKeyEventMarker
@@ -203,11 +235,16 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
       return Unmanaged.passUnretained(event)
     }
     let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-    let result: (consume: Bool, command: DictationKeyCommand?) = lock.withLock {
+    let result: (consume: Bool, command: InterceptedKeyCommand?) = lock.withLock {
       if type == .keyUp, swallowedKeyCodes.remove(keyCode) != nil {
         return (true, nil)
       }
       guard type == .keyDown else { return (false, nil) }
+
+      if screenshotShortcut.matches(keyCode: keyCode, flags: event.flags) {
+        let isFirstPress = swallowedKeyCodes.insert(keyCode).inserted
+        return (true, isFirstPress ? .screenshot : nil)
+      }
 
       let command = dictationKeyCommand(
         keyCode: keyCode,
@@ -217,21 +254,30 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
       )
       guard let command else { return (false, nil) }
       let isFirstPress = swallowedKeyCodes.insert(keyCode).inserted
-      return (true, isFirstPress ? command : nil)
+      return (true, isFirstPress ? .dictation(command) : nil)
     }
     if let command = result.command {
       Task { @MainActor in
         switch command {
-        case .finish: onFinish()
-        case .queueReturn: onQueueReturn()
-        case .insertCurrent: onInsertCurrent()
-        case .toggleCleanup: onToggleCleanup()
-        case .cancel: onCancel()
+        case .screenshot: onScreenshot()
+        case .dictation(let command):
+          switch command {
+          case .finish: onFinish()
+          case .queueReturn: onQueueReturn()
+          case .insertCurrent: onInsertCurrent()
+          case .toggleCleanup: onToggleCleanup()
+          case .cancel: onCancel()
+          }
         }
       }
     }
     return result.consume ? nil : Unmanaged.passUnretained(event)
   }
+}
+
+private enum InterceptedKeyCommand {
+  case screenshot
+  case dictation(DictationKeyCommand)
 }
 
 private func keyCommandEventTapCallback(

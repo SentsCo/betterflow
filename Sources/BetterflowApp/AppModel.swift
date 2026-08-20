@@ -13,9 +13,11 @@ final class AppModel: ObservableObject {
   let coordinator: RecognitionCoordinator
   let modelDownloads: ModelDownloadManager
   let cleanupModelDownloads: CleanupModelDownloadManager
+  let screenshots: ScreenshotAnnotationController
 
   @Published private(set) var microphoneGranted = AppPermission.microphoneGranted
   @Published private(set) var accessibilityGranted = AppPermission.accessibilityGranted
+  @Published private(set) var screenRecordingGranted = AppPermission.screenRecordingGranted
 
   private var overlay: OverlayController?
   private var settingsWindow: BetterflowSettingsWindowController?
@@ -43,6 +45,7 @@ final class AppModel: ObservableObject {
       settings: settings,
       runtime: cleanupRuntime
     )
+    screenshots = ScreenshotAnnotationController()
     coordinator.objectWillChange
       .sink { [weak self] in self?.objectWillChange.send() }
       .store(in: &cancellables)
@@ -67,6 +70,8 @@ final class AppModel: ObservableObject {
     hotkey = HotkeyMonitor(
       key: { [settings] in settings.dictationKey },
       onToggle: { [coordinator] in coordinator.toggleDictation() },
+      screenshotShortcut: settings.screenshotShortcut,
+      onScreenshot: { [weak self] in self?.beginScreenshot() },
       onFinish: { [coordinator] in coordinator.finishDictation() },
       onQueueReturn: { [coordinator] in coordinator.queueReturnAfterInsertion() },
       onInsertCurrent: { [coordinator] in coordinator.insertCurrentTranscript() },
@@ -76,6 +81,11 @@ final class AppModel: ObservableObject {
     coordinator.onKeyboardModeChange = { [weak hotkey] mode in
       hotkey?.setDictationMode(mode)
     }
+    settings.$screenshotShortcut
+      .sink { [weak hotkey] shortcut in hotkey?.setScreenshotShortcut(shortcut) }
+      .store(in: &cancellables)
+    screenshots.onCopied = { [sounds] in sounds.play(.textCopied) }
+    screenshots.onFailure = { [weak self] message in self?.showScreenshotError(message) }
     hotkey?.start()
     modelDownloads.refresh(prepareSelectedModel: true)
     cleanupModelDownloads.refresh(prepareSelectedModel: true)
@@ -106,6 +116,22 @@ final class AppModel: ObservableObject {
     schedulePermissionRefresh()
   }
 
+  func requestScreenRecording() {
+    _ = AppPermission.requestScreenRecording()
+    schedulePermissionRefresh()
+  }
+
+  func beginScreenshot() {
+    guard !screenshots.isActive else { return }
+    guard AppPermission.screenRecordingGranted else {
+      requestScreenRecording()
+      showSettings()
+      return
+    }
+    if coordinator.state != .idle { coordinator.cancelDictation() }
+    screenshots.start()
+  }
+
   func copyTranscript(_ text: String) {
     TextDelivery.copy(text)
     sounds.play(.textCopied)
@@ -115,11 +141,15 @@ final class AppModel: ObservableObject {
     let accessibilityWasGranted = accessibilityGranted
     let currentMicrophone = AppPermission.microphoneGranted
     let currentAccessibility = AppPermission.accessibilityGranted
+    let currentScreenRecording = AppPermission.screenRecordingGranted
     if microphoneGranted != currentMicrophone {
       microphoneGranted = currentMicrophone
     }
     if accessibilityGranted != currentAccessibility {
       accessibilityGranted = currentAccessibility
+    }
+    if screenRecordingGranted != currentScreenRecording {
+      screenRecordingGranted = currentScreenRecording
     }
     if accessibilityGranted, !accessibilityWasGranted {
       hotkey?.start()
@@ -128,6 +158,7 @@ final class AppModel: ObservableObject {
 
   func quit() {
     hotkey?.stop()
+    screenshots.cancel()
     coordinator.shutdown()
     NSApplication.shared.terminate(nil)
   }
@@ -139,5 +170,13 @@ final class AppModel: ObservableObject {
         refreshPermissions()
       }
     }
+  }
+
+  private func showScreenshotError(_ message: String) {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "Screenshot Failed"
+    alert.informativeText = message
+    alert.runModal()
   }
 }

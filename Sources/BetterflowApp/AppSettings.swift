@@ -1,3 +1,4 @@
+import AppKit
 import BetterflowBenchmarkCore
 import Combine
 import Foundation
@@ -26,6 +27,34 @@ enum DictationKey: String, CaseIterable, Identifiable {
   }
 }
 
+struct ScreenshotShortcut: Codable, Equatable, Sendable {
+  static let standard = ScreenshotShortcut(
+    keyCode: 19,
+    modifierFlagsRawValue: NSEvent.ModifierFlags([.command, .shift]).rawValue,
+    key: "2"
+  )
+
+  let keyCode: UInt16
+  let modifierFlagsRawValue: UInt
+  let key: String
+
+  var modifierFlags: NSEvent.ModifierFlags {
+    NSEvent.ModifierFlags(rawValue: modifierFlagsRawValue)
+      .intersection(.deviceIndependentFlagsMask)
+  }
+
+  var label: String {
+    let flags = modifierFlags
+    return [
+      flags.contains(.control) ? "⌃" : "",
+      flags.contains(.option) ? "⌥" : "",
+      flags.contains(.shift) ? "⇧" : "",
+      flags.contains(.command) ? "⌘" : "",
+      key,
+    ].joined()
+  }
+}
+
 @MainActor
 final class AppSettings: ObservableObject {
   private enum Key {
@@ -39,6 +68,7 @@ final class AppSettings: ObservableObject {
     static let showOverlay = "showOverlay"
     static let cleanupModel = "cleanupModel"
     static let cleanupEnabledByDefault = "cleanupEnabledByDefault"
+    static let screenshotShortcut = "screenshotShortcut"
   }
 
   private let defaults: UserDefaults
@@ -81,6 +111,12 @@ final class AppSettings: ObservableObject {
     }
   }
 
+  @Published var screenshotShortcut: ScreenshotShortcut {
+    didSet {
+      defaults.set(try? JSONEncoder().encode(screenshotShortcut), forKey: Key.screenshotShortcut)
+    }
+  }
+
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     selectedModel =
@@ -95,7 +131,7 @@ final class AppSettings: ObservableObject {
       defaults.dictionary(forKey: Key.knownMicrophoneNames) as? [String: String] ?? [:]
     dictationKey =
       (defaults.string(forKey: Key.dictationKey)
-        ?? defaults.string(forKey: Key.legacyPushToTalkKey))
+      ?? defaults.string(forKey: Key.legacyPushToTalkKey))
       .flatMap(DictationKey.init(rawValue:)) ?? .rightControl
     showOverlay = defaults.object(forKey: Key.showOverlay) as? Bool ?? true
     cleanupModel =
@@ -103,6 +139,10 @@ final class AppSettings: ObservableObject {
       .flatMap(CleanupModel.init(rawValue:)) ?? .appleFoundation
     cleanupEnabledByDefault =
       defaults.object(forKey: Key.cleanupEnabledByDefault) as? Bool ?? false
+    screenshotShortcut =
+      defaults.data(forKey: Key.screenshotShortcut)
+      .flatMap { try? JSONDecoder().decode(ScreenshotShortcut.self, from: $0) }
+      ?? .standard
   }
 
   func addGuideWord() {

@@ -93,9 +93,14 @@ private final class QwenWorker {
     lineReader = QwenLineReader { [pending] data in
       Task { await pending.resolve(data) }
     }
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    guard let uv = QwenResource.uvURL else {
+      throw AdapterError.worker(
+        "Qwen requires uv. Install it with Homebrew, then relaunch Betterflow."
+      )
+    }
+    process.executableURL = uv
     process.arguments = [
-      "uv", "run", "--python", "3.13", "--with", "mlx-audio==0.4.6", "python",
+      "run", "--python", "3.13", "--with", "mlx-audio==0.4.6", "python",
       script.path, "--model", Self.model,
     ]
     process.standardInput = input
@@ -153,6 +158,18 @@ private final class QwenWorker {
 }
 
 private enum QwenResource {
+  static var uvURL: URL? {
+    let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent()
+    let candidates = [
+      executableDirectory?.appendingPathComponent("uv"),
+      URL(fileURLWithPath: "/opt/homebrew/bin/uv"),
+      URL(fileURLWithPath: "/usr/local/bin/uv"),
+      FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/uv"),
+      FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cargo/bin/uv"),
+    ].compactMap { $0 }
+    return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+  }
+
   static var workerURL: URL? {
     if let resources = Bundle.main.resourceURL {
       let packaged =

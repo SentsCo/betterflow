@@ -13,6 +13,9 @@ contents_dir="$app_dir/Contents"
 rm -rf "$app_dir"
 mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources"
 install -m 755 "$bin_dir/Betterflow" "$contents_dir/MacOS/Betterflow"
+if uv_path=$(command -v uv); then
+  install -m 755 "$uv_path" "$contents_dir/MacOS/uv"
+fi
 install -m 644 "$project_dir/Support/Info.plist" "$contents_dir/Info.plist"
 install -m 644 "$project_dir/Resources/Betterflow.icns" "$contents_dir/Resources/Betterflow.icns"
 

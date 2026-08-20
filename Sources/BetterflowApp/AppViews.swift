@@ -25,6 +25,12 @@ struct MenuContentView: View {
       }
       .keyboardShortcut("d")
 
+      Button {
+        model.beginScreenshot()
+      } label: {
+        Label("Annotate Screenshot", systemImage: "rectangle.and.pencil.and.ellipsis")
+      }
+
       if case .error(let message) = coordinator.state {
         Text(message)
           .font(.caption)
@@ -172,6 +178,17 @@ private struct GeneralSettingsView: View {
         Toggle("Show the live transcription bubble", isOn: $settings.showOverlay)
       }
 
+      Section("Screenshots") {
+        LabeledContent("Annotate shortcut") {
+          ShortcutRecorder(shortcut: $settings.screenshotShortcut)
+        }
+        Text(
+          "Draw first, then select an area or copy the full display. P selects pen, A arrow, and R rectangle. Return selects an area, Command-Return copies the display, Command-Z undoes, and Escape cancels."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
+
       Section("Permissions") {
         PermissionRow(
           title: "Microphone",
@@ -184,6 +201,12 @@ private struct GeneralSettingsView: View {
           detail: "Insert the final transcript into the focused app.",
           granted: model.accessibilityGranted,
           request: model.requestAccessibility
+        )
+        PermissionRow(
+          title: "Screen Recording",
+          detail: "Capture the desktop for annotated screenshots.",
+          granted: model.screenRecordingGranted,
+          request: model.requestScreenRecording
         )
       }
 

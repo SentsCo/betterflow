@@ -12,6 +12,10 @@ enum AppPermission {
     AXIsProcessTrusted()
   }
 
+  static var screenRecordingGranted: Bool {
+    CGPreflightScreenCaptureAccess()
+  }
+
   static func requestMicrophone() async -> Bool {
     switch AVCaptureDevice.authorizationStatus(for: .audio) {
     case .authorized: true
@@ -24,5 +28,10 @@ enum AppPermission {
   static func requestAccessibility() -> Bool {
     let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
     return AXIsProcessTrustedWithOptions(options)
+  }
+
+  @discardableResult
+  static func requestScreenRecording() -> Bool {
+    CGRequestScreenCaptureAccess()
   }
 }
