@@ -1,27 +1,47 @@
-import AppKit
+import AudioToolbox
+import Foundation
 
-enum BetterflowSound: Hashable {
+enum BetterflowSound: CaseIterable, Hashable, Sendable {
   case recordingStarted
   case textInserted
   case textCopied
   case insertionFallback
+
+  fileprivate var systemSoundName: String {
+    switch self {
+    case .recordingStarted: "Pop"
+    case .textInserted, .textCopied: "Glass"
+    case .insertionFallback: "Tink"
+    }
+  }
 }
 
 @MainActor
 final class AppSoundPlayer {
-  private let sounds: [BetterflowSound: NSSound] = [
-    .recordingStarted: NSSound(named: "Pop"),
-    .textInserted: NSSound(named: "Glass"),
-    .textCopied: NSSound(named: "Glass"),
-    .insertionFallback: NSSound(named: "Tink"),
-  ].compactMapValues { $0 }
+  private let soundIDs: [BetterflowSound: SystemSoundID]
+
+  init() {
+    soundIDs = Dictionary(
+      uniqueKeysWithValues: BetterflowSound.allCases.compactMap { sound in
+        let url = URL(fileURLWithPath: "/System/Library/Sounds")
+          .appendingPathComponent(sound.systemSoundName)
+          .appendingPathExtension("aiff")
+        var soundID = SystemSoundID()
+        guard AudioServicesCreateSystemSoundID(url as CFURL, &soundID) == kAudioServicesNoError
+        else { return nil }
+        return (sound, soundID)
+      }
+    )
+  }
+
+  deinit {
+    for soundID in soundIDs.values {
+      AudioServicesDisposeSystemSoundID(soundID)
+    }
+  }
 
   func play(_ sound: BetterflowSound) {
-    guard let player = sounds[sound] else { return }
-    for sound in sounds.values {
-      sound.stop()
-    }
-    player.volume = sound == .textInserted || sound == .textCopied ? 0.4 : 0.35
-    player.play()
+    guard let soundID = soundIDs[sound] else { return }
+    AudioServicesPlaySystemSound(soundID)
   }
 }

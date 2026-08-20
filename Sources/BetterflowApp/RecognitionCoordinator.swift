@@ -277,11 +277,11 @@ final class RecognitionCoordinator: ObservableObject {
     transcript = ""
     audioMeter.reset()
     state = .preparing
-    sounds.play(.recordingStarted)
     if settings.showOverlay { onOverlayVisibility?(true) }
     startupTask = Task { [weak self] in
       await self?.beginCapture(session: session)
     }
+    sounds.play(.recordingStarted)
   }
 
   func finishDictation() {
