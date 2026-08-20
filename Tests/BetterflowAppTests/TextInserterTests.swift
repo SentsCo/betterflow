@@ -16,3 +16,26 @@ func unicodeInsertionEventsDoNotInheritHeldModifiers() throws {
   #expect(keyDown.flags.intersection(modifierMask).isEmpty)
   #expect(keyUp.flags.intersection(modifierMask).isEmpty)
 }
+
+@MainActor @Test
+func queuedReturnEventsBypassBetterflowAndDoNotInheritHeldModifiers() throws {
+  let (keyDown, keyUp) = try TextInserter.makeKeyEvents(virtualKey: 36)
+  let modifierMask: CGEventFlags = [
+    .maskCommand,
+    .maskControl,
+    .maskAlternate,
+    .maskShift,
+    .maskSecondaryFn,
+  ]
+
+  #expect(keyDown.flags.intersection(modifierMask).isEmpty)
+  #expect(keyUp.flags.intersection(modifierMask).isEmpty)
+  #expect(
+    keyDown.getIntegerValueField(.eventSourceUserData)
+      == betterflowSyntheticKeyEventMarker
+  )
+  #expect(
+    keyUp.getIntegerValueField(.eventSourceUserData)
+      == betterflowSyntheticKeyEventMarker
+  )
+}

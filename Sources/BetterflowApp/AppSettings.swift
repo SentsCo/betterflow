@@ -2,7 +2,7 @@ import BetterflowBenchmarkCore
 import Combine
 import Foundation
 
-enum PushToTalkKey: String, CaseIterable, Identifiable {
+enum DictationKey: String, CaseIterable, Identifiable {
   case leftCommand
   case rightCommand
   case leftOption
@@ -34,7 +34,8 @@ final class AppSettings: ObservableObject {
     static let priorityEnabled = "microphonePriorityEnabled"
     static let microphonePriority = "microphonePriority"
     static let knownMicrophoneNames = "knownMicrophoneNames"
-    static let pushToTalkKey = "pushToTalkKey"
+    static let dictationKey = "dictationKey"
+    static let legacyPushToTalkKey = "pushToTalkKey"
     static let showOverlay = "showOverlay"
     static let cleanupModel = "cleanupModel"
     static let cleanupEnabledByDefault = "cleanupEnabledByDefault"
@@ -62,8 +63,8 @@ final class AppSettings: ObservableObject {
     didSet { defaults.set(knownMicrophoneNames, forKey: Key.knownMicrophoneNames) }
   }
 
-  @Published var pushToTalkKey: PushToTalkKey {
-    didSet { defaults.set(pushToTalkKey.rawValue, forKey: Key.pushToTalkKey) }
+  @Published var dictationKey: DictationKey {
+    didSet { defaults.set(dictationKey.rawValue, forKey: Key.dictationKey) }
   }
 
   @Published var showOverlay: Bool {
@@ -92,9 +93,10 @@ final class AppSettings: ObservableObject {
     microphonePriority = defaults.stringArray(forKey: Key.microphonePriority) ?? []
     knownMicrophoneNames =
       defaults.dictionary(forKey: Key.knownMicrophoneNames) as? [String: String] ?? [:]
-    pushToTalkKey =
-      defaults.string(forKey: Key.pushToTalkKey)
-      .flatMap(PushToTalkKey.init(rawValue:)) ?? .rightControl
+    dictationKey =
+      (defaults.string(forKey: Key.dictationKey)
+        ?? defaults.string(forKey: Key.legacyPushToTalkKey))
+      .flatMap(DictationKey.init(rawValue:)) ?? .rightControl
     showOverlay = defaults.object(forKey: Key.showOverlay) as? Bool ?? true
     cleanupModel =
       defaults.string(forKey: Key.cleanupModel)

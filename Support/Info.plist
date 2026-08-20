@@ -29,7 +29,7 @@
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Betterflow needs microphone access while you hold the push-to-talk key.</string>
+  <string>Betterflow needs microphone access to transcribe your speech.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
 </dict>

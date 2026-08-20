@@ -178,6 +178,7 @@ final class RecognitionCoordinator: ObservableObject {
   private var currentSession = UUID()
   private var insertionTarget: TextInsertionTarget?
   private var cleanupModelForSession = CleanupModel.appleFoundation
+  private var returnAfterInsertion = false
   private var dictationActive = false
   private var recording = false
 
@@ -245,9 +246,8 @@ final class RecognitionCoordinator: ObservableObject {
     if settings.selectedModel == model { state = .idle }
   }
 
-  @discardableResult
-  func beginPushToTalk() -> Bool {
-    guard !dictationActive, !recording, state != .finalizing else { return false }
+  func beginDictation() {
+    guard !dictationActive, !recording, state != .finalizing else { return }
     dictationActive = true
     onKeyboardModeChange?(.recording)
     let session = UUID()
@@ -255,6 +255,7 @@ final class RecognitionCoordinator: ObservableObject {
     insertionTarget = TextInserter.captureTarget()
     cleanupEnabled = settings.cleanupEnabledByDefault
     cleanupModelForSession = settings.cleanupModel
+    returnAfterInsertion = false
     transcript = ""
     audioMeter.reset()
     state = .preparing
@@ -263,11 +264,6 @@ final class RecognitionCoordinator: ObservableObject {
     startupTask = Task { [weak self] in
       await self?.beginCapture(session: session)
     }
-    return true
-  }
-
-  func releasePushToTalk() {
-    finishDictation()
   }
 
   func finishDictation() {
@@ -277,6 +273,7 @@ final class RecognitionCoordinator: ObservableObject {
       startupTask = nil
       if state == .preparing { state = .idle }
       insertionTarget = nil
+      returnAfterInsertion = false
       onOverlayVisibility?(false)
       onKeyboardModeChange?(.none)
       return
@@ -302,11 +299,16 @@ final class RecognitionCoordinator: ObservableObject {
     }
   }
 
-  func toggleFromMenu() {
+  func queueReturnAfterInsertion() {
+    guard state == .finalizing else { return }
+    returnAfterInsertion = true
+  }
+
+  func toggleDictation() {
     if recording || dictationActive {
       finishDictation()
     } else {
-      beginPushToTalk()
+      beginDictation()
     }
   }
 
@@ -503,8 +505,14 @@ final class RecognitionCoordinator: ObservableObject {
         deliveredTranscript,
         rawText: appliedCleanup ? rawTranscript : nil
       )
-      let delivery = TextDelivery.deliver(deliveredTranscript, into: insertionTarget)
+      let target = insertionTarget
+      let delivery = TextDelivery.deliver(deliveredTranscript, into: target)
       insertionTarget = nil
+      let shouldSendReturn = returnAfterInsertion
+      returnAfterInsertion = false
+      if delivery == .inserted, shouldSendReturn {
+        try? TextInserter.pressReturn(into: target)
+      }
       onOverlayVisibility?(false)
       state = .idle
       onKeyboardModeChange?(.none)
@@ -548,6 +556,7 @@ final class RecognitionCoordinator: ObservableObject {
     finalizationTask = nil
     let target = insertionTarget
     insertionTarget = nil
+    returnAfterInsertion = false
     audioMeter.reset()
     state = .idle
     onOverlayVisibility?(false)
@@ -576,6 +585,7 @@ final class RecognitionCoordinator: ObservableObject {
     audioMeterTask?.cancel()
     audioMeterTask = nil
     insertionTarget = nil
+    returnAfterInsertion = false
     transcript = ""
     audioMeter.reset()
     state = .error(message)
@@ -587,6 +597,7 @@ final class RecognitionCoordinator: ObservableObject {
     guard currentSession == session else { return }
     recording = false
     insertionTarget = nil
+    returnAfterInsertion = false
     transcript = ""
     audioMeter.reset()
     state = .idle

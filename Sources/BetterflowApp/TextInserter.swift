@@ -3,6 +3,8 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
+let betterflowSyntheticKeyEventMarker: Int64 = 0x4245_5454_4552_464C
+
 struct TextInsertionTarget {
   fileprivate let element: AXUIElement
 }
@@ -56,6 +58,17 @@ enum TextInserter {
     throw TextInsertionError.noTextDestination
   }
 
+  static func pressReturn(into capturedTarget: TextInsertionTarget?) throws {
+    guard AXIsProcessTrusted() else { throw TextInsertionError.accessibilityDenied }
+    guard let capturedTarget, let currentTarget = captureTarget(),
+      CFEqual(currentTarget.element, capturedTarget.element)
+    else { throw TextInsertionError.noTextDestination }
+
+    let (keyDown, keyUp) = try makeKeyEvents(virtualKey: 36)
+    keyDown.post(tap: .cghidEventTap)
+    keyUp.post(tap: .cghidEventTap)
+  }
+
   private static func postUnicode(_ text: String) throws {
     let characters = Array(text.utf16)
     for chunkStart in stride(from: 0, to: characters.count, by: 32) {
@@ -86,6 +99,32 @@ enum TextInserter {
         unicodeString: buffer.baseAddress!
       )
     }
+    return (keyDown, keyUp)
+  }
+
+  static func makeKeyEvents(virtualKey: CGKeyCode) throws -> (CGEvent, CGEvent) {
+    guard let source = CGEventSource(stateID: .privateState),
+      let keyDown = CGEvent(
+        keyboardEventSource: source,
+        virtualKey: virtualKey,
+        keyDown: true
+      ),
+      let keyUp = CGEvent(
+        keyboardEventSource: source,
+        virtualKey: virtualKey,
+        keyDown: false
+      )
+    else { throw TextInsertionError.cannotCreateKeyboardEvent }
+    keyDown.flags = []
+    keyUp.flags = []
+    keyDown.setIntegerValueField(
+      .eventSourceUserData,
+      value: betterflowSyntheticKeyEventMarker
+    )
+    keyUp.setIntegerValueField(
+      .eventSourceUserData,
+      value: betterflowSyntheticKeyEventMarker
+    )
     return (keyDown, keyUp)
   }
 

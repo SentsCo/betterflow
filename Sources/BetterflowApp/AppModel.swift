@@ -65,10 +65,10 @@ final class AppModel: ObservableObject {
       }
     }
     hotkey = HotkeyMonitor(
-      key: { [settings] in settings.pushToTalkKey },
-      onPress: { [coordinator] in coordinator.beginPushToTalk() },
-      onHoldRelease: { [coordinator] in coordinator.releasePushToTalk() },
+      key: { [settings] in settings.dictationKey },
+      onToggle: { [coordinator] in coordinator.toggleDictation() },
       onFinish: { [coordinator] in coordinator.finishDictation() },
+      onQueueReturn: { [coordinator] in coordinator.queueReturnAfterInsertion() },
       onInsertCurrent: { [coordinator] in coordinator.insertCurrentTranscript() },
       onToggleCleanup: { [coordinator] in coordinator.toggleCleanup() },
       onCancel: { [coordinator] in coordinator.cancelDictation() }

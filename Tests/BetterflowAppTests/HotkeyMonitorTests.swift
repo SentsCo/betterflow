@@ -4,26 +4,6 @@ import Testing
 @testable import BetterflowApp
 
 @Test
-func pushToTalkGestureLatchesOnTapAndFinishesOnHold() {
-  var gesture = PushToTalkGesture()
-
-  gesture.press(dictationStarted: true, at: 10)
-  #expect(gesture.release(at: 10.1, holdThreshold: 0.25) == .latch)
-
-  gesture.press(dictationStarted: true, at: 20)
-  #expect(gesture.release(at: 20.3, holdThreshold: 0.25) == .finish)
-}
-
-@Test
-func pushToTalkGestureIgnoresPressWhenDictationDidNotStart() {
-  var gesture = PushToTalkGesture()
-
-  gesture.press(dictationStarted: false, at: 10)
-
-  #expect(gesture.release(at: 11, holdThreshold: 0.25) == .none)
-}
-
-@Test
 func dictationKeyCommandsRespectModifiersAndSessionState() {
   #expect(
     dictationKeyCommand(keyCode: 36, flags: [], mode: .recording) == .finish
@@ -35,6 +15,9 @@ func dictationKeyCommandsRespectModifiersAndSessionState() {
   #expect(
     dictationKeyCommand(keyCode: 76, flags: .maskCommand, mode: .finalizing)
       == .insertCurrent
+  )
+  #expect(
+    dictationKeyCommand(keyCode: 36, flags: [], mode: .finalizing) == .queueReturn
   )
   #expect(
     dictationKeyCommand(keyCode: 53, flags: [], mode: .finalizing) == .cancel
@@ -72,6 +55,5 @@ func dictationKeyCommandsRespectModifiersAndSessionState() {
   )
   #expect(dictationKeyCommand(keyCode: 6, flags: .maskCommand, mode: .recording) == nil)
   #expect(dictationKeyCommand(keyCode: 6, flags: [], mode: .none) == nil)
-  #expect(dictationKeyCommand(keyCode: 36, flags: [], mode: .finalizing) == nil)
   #expect(dictationKeyCommand(keyCode: 36, flags: .maskCommand, mode: .none) == nil)
 }

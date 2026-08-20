@@ -10,6 +10,7 @@ enum DictationKeyboardMode: Sendable {
 
 enum DictationKeyCommand: Equatable {
   case finish
+  case queueReturn
   case insertCurrent
   case toggleCleanup
   case cancel
@@ -30,10 +31,14 @@ func dictationKeyCommand(
   }
   guard returnKeyCodes.contains(keyCode) else { return nil }
   if effectiveFlags.contains(.maskCommand), mode != .none { return .insertCurrent }
-  return mode == .recording ? .finish : nil
+  switch mode {
+  case .recording: return .finish
+  case .finalizing: return .queueReturn
+  case .none: return nil
+  }
 }
 
-private extension PushToTalkKey {
+private extension DictationKey {
   var eventFlag: CGEventFlags {
     switch self {
     case .leftCommand, .rightCommand: .maskCommand
@@ -44,76 +49,31 @@ private extension PushToTalkKey {
   }
 }
 
-struct PushToTalkGesture {
-  enum ReleaseAction: Equatable {
-    case latch
-    case finish
-    case none
-  }
-
-  private enum Phase {
-    case idle
-    case pressed(at: TimeInterval)
-    case ignored
-  }
-
-  private var phase = Phase.idle
-
-  var isTracking: Bool {
-    if case .pressed = phase { return true }
-    return false
-  }
-
-  mutating func press(dictationStarted: Bool, at timestamp: TimeInterval) {
-    phase = dictationStarted ? .pressed(at: timestamp) : .ignored
-  }
-
-  mutating func release(
-    at timestamp: TimeInterval,
-    holdThreshold: TimeInterval
-  ) -> ReleaseAction {
-    defer { phase = .idle }
-    switch phase {
-    case .pressed(let pressedAt):
-      return timestamp - pressedAt >= holdThreshold ? .finish : .latch
-    case .idle, .ignored: return .none
-    }
-  }
-
-  mutating func cancel() {
-    phase = .idle
-  }
-}
-
 @MainActor
 final class HotkeyMonitor {
-  private static let holdThreshold = 0.25
-
-  private let key: () -> PushToTalkKey
-  private let onPress: () -> Bool
-  private let onHoldRelease: () -> Void
+  private let key: () -> DictationKey
+  private let onToggle: () -> Void
   private let commandInterceptor: KeyCommandInterceptor
   private var globalMonitor: Any?
   private var localMonitor: Any?
   private var eventTap: CFMachPort?
   private var eventTapSource: CFRunLoopSource?
-  private var gesture = PushToTalkGesture()
   private var pressed = false
 
   init(
-    key: @escaping () -> PushToTalkKey,
-    onPress: @escaping () -> Bool,
-    onHoldRelease: @escaping () -> Void,
+    key: @escaping () -> DictationKey,
+    onToggle: @escaping () -> Void,
     onFinish: @escaping @MainActor @Sendable () -> Void,
+    onQueueReturn: @escaping @MainActor @Sendable () -> Void,
     onInsertCurrent: @escaping @MainActor @Sendable () -> Void,
     onToggleCleanup: @escaping @MainActor @Sendable () -> Void,
     onCancel: @escaping @MainActor @Sendable () -> Void
   ) {
     self.key = key
-    self.onPress = onPress
-    self.onHoldRelease = onHoldRelease
+    self.onToggle = onToggle
     commandInterceptor = KeyCommandInterceptor(
       onFinish: onFinish,
+      onQueueReturn: onQueueReturn,
       onInsertCurrent: onInsertCurrent,
       onToggleCleanup: onToggleCleanup,
       onCancel: onCancel
@@ -145,15 +105,11 @@ final class HotkeyMonitor {
     eventTap = nil
     eventTapSource = nil
     pressed = false
-    gesture.cancel()
     commandInterceptor.setMode(.none)
   }
 
   func setDictationMode(_ mode: DictationKeyboardMode) {
     commandInterceptor.setMode(mode, ignoring: key().eventFlag)
-    if mode != .recording {
-      gesture.cancel()
-    }
   }
 
   private func startCommandInterceptor() {
@@ -204,22 +160,14 @@ final class HotkeyMonitor {
     }
     guard isDown != pressed else { return }
     pressed = isDown
-    if isDown {
-      gesture.press(dictationStarted: onPress(), at: event.timestamp)
-      return
-    }
-
-    switch gesture.release(at: event.timestamp, holdThreshold: Self.holdThreshold) {
-    case .latch: break
-    case .finish: onHoldRelease()
-    case .none: break
-    }
+    if isDown { onToggle() }
   }
 }
 
 private final class KeyCommandInterceptor: @unchecked Sendable {
   private let lock = NSLock()
   private let onFinish: @MainActor @Sendable () -> Void
+  private let onQueueReturn: @MainActor @Sendable () -> Void
   private let onInsertCurrent: @MainActor @Sendable () -> Void
   private let onToggleCleanup: @MainActor @Sendable () -> Void
   private let onCancel: @MainActor @Sendable () -> Void
@@ -229,11 +177,13 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
 
   init(
     onFinish: @escaping @MainActor @Sendable () -> Void,
+    onQueueReturn: @escaping @MainActor @Sendable () -> Void,
     onInsertCurrent: @escaping @MainActor @Sendable () -> Void,
     onToggleCleanup: @escaping @MainActor @Sendable () -> Void,
     onCancel: @escaping @MainActor @Sendable () -> Void
   ) {
     self.onFinish = onFinish
+    self.onQueueReturn = onQueueReturn
     self.onInsertCurrent = onInsertCurrent
     self.onToggleCleanup = onToggleCleanup
     self.onCancel = onCancel
@@ -247,6 +197,11 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
   }
 
   func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+    if event.getIntegerValueField(.eventSourceUserData)
+      == betterflowSyntheticKeyEventMarker
+    {
+      return Unmanaged.passUnretained(event)
+    }
     let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
     let result: (consume: Bool, command: DictationKeyCommand?) = lock.withLock {
       if type == .keyUp, swallowedKeyCodes.remove(keyCode) != nil {
@@ -268,6 +223,7 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
       Task { @MainActor in
         switch command {
         case .finish: onFinish()
+        case .queueReturn: onQueueReturn()
         case .insertCurrent: onInsertCurrent()
         case .toggleCleanup: onToggleCleanup()
         case .cancel: onCancel()

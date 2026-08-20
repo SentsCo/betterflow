@@ -21,7 +21,7 @@ struct MenuContentView: View {
       }
 
       Button(coordinator.state == .listening ? "Stop Dictation" : "Start Dictation") {
-        coordinator.toggleFromMenu()
+        coordinator.toggleDictation()
       }
       .keyboardShortcut("d")
 
@@ -158,14 +158,14 @@ private struct GeneralSettingsView: View {
 
   var body: some View {
     Form {
-      Section("Push to Talk") {
-        Picker("Push to talk key", selection: $settings.pushToTalkKey) {
-          ForEach(PushToTalkKey.allCases) { key in
+      Section("Dictation") {
+        Picker("Start/stop key", selection: $settings.dictationKey) {
+          ForEach(DictationKey.allCases) { key in
             Text(key.label).tag(key)
           }
         }
         Text(
-          "Tap to keep recording. Hold for push to talk. Enter finishes; Command-Enter inserts the current text; Z toggles cleanup; Escape cancels."
+          "Press once to start and again to finish. Enter finishes; press it again while finishing to send afterward. Command-Enter inserts immediately; Z toggles cleanup; Escape cancels."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
