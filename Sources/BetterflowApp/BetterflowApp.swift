@@ -1,14 +1,24 @@
 import AppKit
+import Sparkle
 import SwiftUI
 
 @main
 struct BetterflowApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var model = AppModel.shared
+  private let updaterController = SPUStandardUpdaterController(
+    startingUpdater: true,
+    updaterDelegate: nil,
+    userDriverDelegate: nil
+  )
 
   var body: some Scene {
     MenuBarExtra("Betterflow", systemImage: menuIcon) {
-      MenuContentView(model: model, coordinator: model.coordinator)
+      MenuContentView(
+        model: model,
+        coordinator: model.coordinator,
+        updater: updaterController.updater
+      )
     }
     .menuBarExtraStyle(.window)
   }

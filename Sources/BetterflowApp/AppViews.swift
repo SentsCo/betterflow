@@ -1,11 +1,13 @@
 import BetterflowBenchmarkCore
 import Combine
 import ServiceManagement
+import Sparkle
 import SwiftUI
 
 struct MenuContentView: View {
   @ObservedObject var model: AppModel
   @ObservedObject var coordinator: RecognitionCoordinator
+  let updater: SPUUpdater
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -40,6 +42,7 @@ struct MenuContentView: View {
       }
 
       Divider()
+      CheckForUpdatesView(updater: updater)
       Button {
         model.showSettings()
       } label: {
@@ -58,6 +61,34 @@ struct MenuContentView: View {
       priorityEnabled: model.settings.microphonePriorityEnabled,
       priority: model.settings.microphonePriority
     )?.name ?? "System Default"
+  }
+}
+
+@MainActor
+private final class CheckForUpdatesViewModel: ObservableObject {
+  @Published var canCheckForUpdates = false
+
+  init(updater: SPUUpdater) {
+    updater.publisher(for: \.canCheckForUpdates)
+      .assign(to: &$canCheckForUpdates)
+  }
+}
+
+@MainActor
+private struct CheckForUpdatesView: View {
+  @ObservedObject private var viewModel: CheckForUpdatesViewModel
+  private let updater: SPUUpdater
+
+  init(updater: SPUUpdater) {
+    self.updater = updater
+    viewModel = CheckForUpdatesViewModel(updater: updater)
+  }
+
+  var body: some View {
+    Button(action: updater.checkForUpdates) {
+      Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath")
+    }
+    .disabled(!viewModel.canCheckForUpdates)
   }
 }
 

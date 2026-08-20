@@ -23,6 +23,7 @@ let package = Package(
     .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.31.1"),
     .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
     .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.0"),
+    .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.9.6"),
   ],
   targets: [
     .target(name: "BetterflowBenchmarkCore"),
@@ -55,6 +56,7 @@ let package = Package(
         .product(name: "MLX", package: "mlx-swift"),
         .product(name: "HuggingFace", package: "swift-huggingface"),
         .product(name: "Tokenizers", package: "swift-transformers"),
+        .product(name: "Sparkle", package: "Sparkle"),
       ]
     ),
     .testTarget(

@@ -2,6 +2,8 @@
 
 Native macOS voice dictation and annotated screenshots.
 
+[Download the latest release](https://github.com/zachsents/betterflow/releases/latest). Betterflow requires Apple Silicon and macOS 14 or newer. Updates are delivered through Sparkle.
+
 ## Features
 
 - Press the configurable key once to start recording and again to finish.
@@ -35,3 +37,7 @@ On first launch, grant Microphone and Accessibility access. Betterflow then runs
 - While editing a comment: `Return` commits, `Shift-Return` adds a line break, and `Escape` discards it
 
 The repository also includes `betterflow-bench` for comparing recognition engines. Model downloads and results stay outside Git.
+
+## Release
+
+Push a semantic version tag such as `v1.0.0`. The Blacksmith macOS workflow builds, signs, notarizes, and publishes the DMG, ZIP, checksums, and Sparkle appcast. Required repository secrets are documented in [RELEASING.md](RELEASING.md).
