@@ -5,6 +5,7 @@ private enum ScreenshotTool: Int {
   case pen
   case arrow
   case rectangle
+  case comment
 }
 
 private struct ScreenshotAnnotation {
@@ -12,6 +13,8 @@ private struct ScreenshotAnnotation {
   let color: NSColor
   let lineWidth: CGFloat
   var points: [CGPoint]
+  var text = ""
+  var targetRect: CGRect?
 }
 
 private struct CapturedDisplay {
@@ -150,7 +153,7 @@ final class ScreenshotAnnotationController {
   private func showToolbar(on screen: NSScreen?) {
     guard let screen else { return }
     let toolbar = makeToolbar()
-    let size = NSSize(width: 610, height: 56)
+    let size = NSSize(width: 650, height: 56)
     let origin = NSPoint(
       x: screen.frame.midX - size.width / 2,
       y: screen.frame.minY + 28
@@ -181,7 +184,7 @@ final class ScreenshotAnnotationController {
     background.layer?.masksToBounds = true
 
     let tools = NSSegmentedControl(
-      images: ["pencil.tip", "arrow.up.right", "rectangle"].compactMap {
+      images: ["pencil.tip", "arrow.up.right", "rectangle", "text.bubble"].compactMap {
         NSImage(systemSymbolName: $0, accessibilityDescription: nil)
       },
       trackingMode: .selectOne,
@@ -190,6 +193,9 @@ final class ScreenshotAnnotationController {
     )
     tools.selectedSegment = annotationTool.rawValue
     tools.setAccessibilityLabel("Annotation tool")
+    ["Pen (P)", "Arrow (A)", "Rectangle (R)", "Comment (T)"].enumerated().forEach {
+      tools.setToolTip($0.element, forSegment: $0.offset)
+    }
     toolControl = tools
 
     let color = NSColorWell()
@@ -246,7 +252,7 @@ final class ScreenshotAnnotationController {
 
   @objc private func selectTool(_ sender: NSSegmentedControl) {
     guard let tool = ScreenshotTool(rawValue: sender.selectedSegment) else { return }
-    annotationTool = tool
+    selectAnnotationTool(tool)
   }
 
   @objc private func undo() {
@@ -281,6 +287,7 @@ final class ScreenshotAnnotationController {
 extension ScreenshotAnnotationController: ScreenshotCanvasDelegate {
   fileprivate func canvasDidBecomeActive(_ canvas: ScreenshotCanvasView) {
     guard activeCanvas !== canvas else { return }
+    activeCanvas?.finishTextEditing()
     activeCanvas = canvas
     canvas.window?.makeKey()
     canvas.window?.makeFirstResponder(canvas)
@@ -316,23 +323,34 @@ extension ScreenshotAnnotationController: ScreenshotCanvasDelegate {
   }
 
   fileprivate func selectAnnotationTool(_ tool: ScreenshotTool) {
+    activeCanvas?.finishTextEditing()
     annotationTool = tool
     toolControl?.selectedSegment = tool.rawValue
   }
 }
 
-private final class ScreenshotCanvasView: NSView {
+private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
   weak var delegate: ScreenshotCanvasDelegate?
 
   private let screenshot: NSImage
+  private let usesLightCommentBubble: Bool
   private var annotations: [ScreenshotAnnotation] = []
   private var draft: ScreenshotAnnotation?
+  private var editingCommentIndex: Int?
+  private var editingCommentOriginalAnnotation: ScreenshotAnnotation?
+  private var editingCommentIsNew = false
+  private var commentEditor: ScreenshotCommentTextView?
+  private var draggedCommentIndex: Int?
+  private var commentDragOffset = CGPoint.zero
+  private var commentPressPoint: CGPoint?
+  private var didDragComment = false
   private var isSelecting = false
   private var selectionStart: CGPoint?
   private var selectionRect = CGRect.zero
 
   init(frame: NSRect, screenshot: CGImage) {
     self.screenshot = NSImage(cgImage: screenshot, size: frame.size)
+    usesLightCommentBubble = screenshotIsMostlyDark(screenshot)
     super.init(frame: frame)
   }
 
@@ -370,9 +388,13 @@ private final class ScreenshotCanvasView: NSView {
     delegate?.canvasDidBecomeActive(self)
     let point = convert(event.locationInWindow, from: nil)
     if isSelecting {
+      finishTextEditing()
       selectionStart = point
       selectionRect = CGRect(origin: point, size: .zero)
+    } else if let delegate, delegate.annotationTool == .comment {
+      beginComment(at: point, color: delegate.annotationColor)
     } else if let delegate {
+      finishTextEditing()
       draft = ScreenshotAnnotation(
         tool: delegate.annotationTool,
         color: delegate.annotationColor,
@@ -392,6 +414,38 @@ private final class ScreenshotCanvasView: NSView {
         width: abs(point.x - selectionStart.x),
         height: abs(point.y - selectionStart.y)
       ).intersection(bounds)
+    } else if let draggedCommentIndex,
+      annotations.indices.contains(draggedCommentIndex)
+    {
+      if let commentPressPoint,
+        hypot(point.x - commentPressPoint.x, point.y - commentPressPoint.y) >= 3
+      {
+        didDragComment = true
+      }
+      if didDragComment {
+        let annotation = annotations[draggedCommentIndex]
+        let requestedCenter = CGPoint(
+          x: point.x - commentDragOffset.x,
+          y: point.y - commentDragOffset.y
+        )
+        annotations[draggedCommentIndex].points[1] = constrainedCommentCenter(
+          requestedCenter,
+          text: annotation.text
+        )
+      }
+    } else if draft?.tool == .comment, let start = draft?.points.first {
+      let targetRect = CGRect(
+        x: min(start.x, point.x),
+        y: min(start.y, point.y),
+        width: abs(point.x - start.x),
+        height: abs(point.y - start.y)
+      ).intersection(bounds)
+      let commentText = draft?.text ?? ""
+      draft?.targetRect = targetRect
+      draft?.points[1] = constrainedCommentCenter(
+        CGPoint(x: targetRect.maxX + 148, y: targetRect.maxY + 48),
+        text: commentText
+      )
     } else if draft?.tool == .pen {
       draft?.points.append(point)
     } else if let first = draft?.points.first {
@@ -402,6 +456,10 @@ private final class ScreenshotCanvasView: NSView {
 
   override func mouseUp(with event: NSEvent) {
     mouseDragged(with: event)
+    let clickedCommentIndex = didDragComment ? nil : draggedCommentIndex
+    draggedCommentIndex = nil
+    commentPressPoint = nil
+    didDragComment = false
     if isSelecting {
       selectionStart = nil
       guard selectionRect.width >= 4, selectionRect.height >= 4 else {
@@ -410,10 +468,19 @@ private final class ScreenshotCanvasView: NSView {
         return
       }
       delegate?.canvasDidFinishSelection(self, rect: selectionRect)
-    } else if let draft {
+    } else if var draft {
+      if draft.tool == .comment,
+        let targetRect = draft.targetRect,
+        targetRect.width < 4 || targetRect.height < 4
+      {
+        draft.targetRect = nil
+      }
       annotations.append(draft)
       self.draft = nil
+      if draft.tool == .comment { startTextEditing(at: annotations.count - 1, isNew: true) }
       needsDisplay = true
+    } else if let clickedCommentIndex {
+      startTextEditing(at: clickedCommentIndex)
     }
   }
 
@@ -427,22 +494,26 @@ private final class ScreenshotCanvasView: NSView {
     case (35, false): delegate?.selectAnnotationTool(.pen)
     case (0, false): delegate?.selectAnnotationTool(.arrow)
     case (15, false): delegate?.selectAnnotationTool(.rectangle)
+    case (17, false): delegate?.selectAnnotationTool(.comment)
     default: super.keyDown(with: event)
     }
   }
 
   func undo() {
+    finishTextEditing()
     if !annotations.isEmpty { annotations.removeLast() }
     needsDisplay = true
   }
 
   func clear() {
+    discardCommentEditor()
     annotations = []
     draft = nil
     needsDisplay = true
   }
 
   func beginSelection() {
+    finishTextEditing()
     isSelecting = true
     selectionStart = nil
     selectionRect = .zero
@@ -450,6 +521,7 @@ private final class ScreenshotCanvasView: NSView {
   }
 
   func renderedImage(in rect: CGRect) -> NSImage? {
+    finishTextEditing()
     let captureRect = rect.standardized.intersection(bounds)
     guard !captureRect.isEmpty else { return nil }
     let scale = window?.backingScaleFactor ?? 2
@@ -482,13 +554,182 @@ private final class ScreenshotCanvasView: NSView {
     return image
   }
 
+  func finishTextEditing() {
+    guard let index = editingCommentIndex, annotations.indices.contains(index) else {
+      discardCommentEditor()
+      return
+    }
+    annotations[index].text = commentEditor?.string ?? annotations[index].text
+    let isEmpty = annotations[index].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    discardCommentEditor()
+    if isEmpty { annotations.remove(at: index) }
+    needsDisplay = true
+  }
+
+  func cancelTextEditing() {
+    guard let index = editingCommentIndex, annotations.indices.contains(index) else {
+      discardCommentEditor()
+      return
+    }
+    let originalAnnotation = editingCommentOriginalAnnotation ?? annotations[index]
+    let removesComment = editingCommentIsNew
+    discardCommentEditor()
+    if removesComment {
+      annotations.remove(at: index)
+    } else {
+      annotations[index] = originalAnnotation
+    }
+    needsDisplay = true
+  }
+
+  func textDidChange(_ notification: Notification) {
+    guard let editor = notification.object as? NSTextView,
+      editor === commentEditor,
+      let index = editingCommentIndex,
+      annotations.indices.contains(index)
+    else { return }
+    annotations[index].text = editor.string
+    annotations[index].points[1] = constrainedCommentCenter(
+      annotations[index].points[1],
+      text: editor.string
+    )
+    updateCommentEditorFrame()
+    needsDisplay = true
+  }
+
+  private func beginComment(at point: CGPoint, color: NSColor) {
+    if let editingCommentIndex,
+      annotations.indices.contains(editingCommentIndex),
+      !commentRect(for: annotations[editingCommentIndex]).contains(point)
+    {
+      finishTextEditing()
+      return
+    }
+    finishTextEditing()
+    if let index = annotations.indices.reversed().first(where: {
+      annotations[$0].tool == .comment && commentRect(for: annotations[$0]).contains(point)
+    }) {
+      let center = annotations[index].points[1]
+      draggedCommentIndex = index
+      commentDragOffset = CGPoint(x: point.x - center.x, y: point.y - center.y)
+      commentPressPoint = point
+      didDragComment = false
+      return
+    }
+
+    draft = ScreenshotAnnotation(
+      tool: .comment,
+      color: color,
+      lineWidth: 3,
+      points: [
+        point,
+        constrainedCommentCenter(
+          CGPoint(x: point.x + 160, y: point.y + 72),
+          text: ""
+        ),
+      ]
+    )
+    needsDisplay = true
+  }
+
+  private func startTextEditing(at index: Int, isNew: Bool = false) {
+    guard annotations.indices.contains(index) else { return }
+    editingCommentIndex = index
+    editingCommentOriginalAnnotation = annotations[index]
+    editingCommentIsNew = isNew
+    let editor = ScreenshotCommentTextView(frame: .zero)
+    editor.delegate = self
+    editor.string = annotations[index].text
+    editor.font = commentFont
+    editor.textColor = commentTextColor
+    editor.drawsBackground = false
+    editor.isRichText = false
+    editor.importsGraphics = false
+    editor.isHorizontallyResizable = false
+    editor.isVerticallyResizable = false
+    editor.textContainerInset = .zero
+    editor.textContainer?.lineFragmentPadding = 0
+    editor.textContainer?.widthTracksTextView = true
+    editor.wantsLayer = true
+    editor.layer?.masksToBounds = true
+    editor.onCommandReturn = { [weak self] in self?.delegate?.copyFullDisplay() }
+    editor.onCommit = { [weak self] in self?.finishTextEditing() }
+    editor.onCancel = { [weak self] in self?.cancelTextEditing() }
+    commentEditor = editor
+    addSubview(editor)
+    updateCommentEditorFrame()
+    window?.makeFirstResponder(editor)
+    needsDisplay = true
+  }
+
+  private func discardCommentEditor() {
+    commentEditor?.delegate = nil
+    commentEditor?.removeFromSuperview()
+    commentEditor = nil
+    editingCommentIndex = nil
+    editingCommentOriginalAnnotation = nil
+    editingCommentIsNew = false
+    draggedCommentIndex = nil
+    commentPressPoint = nil
+    didDragComment = false
+    window?.makeFirstResponder(self)
+  }
+
+  private func updateCommentEditorFrame() {
+    guard let index = editingCommentIndex,
+      annotations.indices.contains(index),
+      let commentEditor
+    else { return }
+    let rect = commentRect(for: annotations[index])
+    commentEditor.frame = CGRect(
+      x: rect.minX + 12,
+      y: rect.minY + 9,
+      width: rect.width - 24,
+      height: rect.height - 18
+    )
+  }
+
+  private func commentRect(for annotation: ScreenshotAnnotation) -> CGRect {
+    guard annotation.points.count >= 2 else { return .zero }
+    let size = commentSize(for: annotation.text)
+    return CGRect(
+      x: annotation.points[1].x - size.width / 2,
+      y: annotation.points[1].y - size.height / 2,
+      width: size.width,
+      height: size.height
+    )
+  }
+
+  private func commentSize(for text: String) -> CGSize {
+    let width: CGFloat = 240
+    let measured = (text.isEmpty ? "Comment" : text as NSString).boundingRect(
+      with: CGSize(width: width - 24, height: .greatestFiniteMagnitude),
+      options: [.usesLineFragmentOrigin, .usesFontLeading],
+      attributes: [.font: commentFont]
+    )
+    return CGSize(
+      width: width,
+      height: min(max(64, ceil(measured.height) + 36), max(64, min(220, bounds.height - 24)))
+    )
+  }
+
+  private func constrainedCommentCenter(_ center: CGPoint, text: String) -> CGPoint {
+    let size = commentSize(for: text)
+    return CGPoint(
+      x: min(max(center.x, bounds.minX + size.width / 2 + 12), bounds.maxX - size.width / 2 - 12),
+      y: min(max(center.y, bounds.minY + size.height / 2 + 12), bounds.maxY - size.height / 2 - 12)
+    )
+  }
+
   private func drawScene() {
     screenshot.draw(in: bounds)
-    annotations.forEach(draw)
+    annotations.enumerated().forEach { index, annotation in
+      draw(annotation, drawsCommentText: index != editingCommentIndex)
+    }
     if let draft { draw(draft) }
   }
 
-  private func draw(_ annotation: ScreenshotAnnotation) {
+  private func draw(_ annotation: ScreenshotAnnotation, drawsCommentText: Bool = true) {
     guard let first = annotation.points.first else { return }
     annotation.color.setStroke()
     annotation.color.setFill()
@@ -540,6 +781,125 @@ private final class ScreenshotCanvasView: NSView {
       let path = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
       path.lineWidth = annotation.lineWidth
       path.stroke()
+    case .comment:
+      drawComment(annotation, drawsText: drawsCommentText)
+    }
+  }
+
+  private func drawComment(_ annotation: ScreenshotAnnotation, drawsText: Bool) {
+    guard annotation.points.count >= 2 else { return }
+    let bubbleRect = commentRect(for: annotation)
+    let bubbleCenter = annotation.points[1]
+    let targetRect = annotation.targetRect?.standardized
+    let anchor = targetRect.map { pointOnRectBoundary($0, toward: bubbleCenter) }
+      ?? annotation.points[0]
+
+    if let targetRect, targetRect.width >= 4, targetRect.height >= 4 {
+      let target = NSBezierPath(roundedRect: targetRect, xRadius: 5, yRadius: 5)
+      target.lineWidth = annotation.lineWidth
+      annotation.color.setStroke()
+      target.stroke()
+    }
+
+    if !bubbleRect.insetBy(dx: -4, dy: -4).contains(anchor) {
+      let lineStart = pointOnRectBoundary(bubbleRect, toward: anchor)
+      let line = NSBezierPath()
+      line.move(to: lineStart)
+      line.line(to: anchor)
+      line.lineWidth = annotation.lineWidth
+      line.lineCapStyle = .round
+      annotation.color.setStroke()
+      line.stroke()
+
+      let angle = atan2(anchor.y - lineStart.y, anchor.x - lineStart.x)
+      let headLength = max(11, annotation.lineWidth * 4)
+      let head = NSBezierPath()
+      head.move(to: anchor)
+      head.line(
+        to: CGPoint(
+          x: anchor.x - headLength * cos(angle - .pi / 6),
+          y: anchor.y - headLength * sin(angle - .pi / 6)
+        ))
+      head.move(to: anchor)
+      head.line(
+        to: CGPoint(
+          x: anchor.x - headLength * cos(angle + .pi / 6),
+          y: anchor.y - headLength * sin(angle + .pi / 6)
+        ))
+      head.lineWidth = annotation.lineWidth
+      head.lineCapStyle = .round
+      head.stroke()
+    }
+
+    let bubble = NSBezierPath(roundedRect: bubbleRect, xRadius: 13, yRadius: 13)
+    NSGraphicsContext.saveGraphicsState()
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.32)
+    shadow.shadowBlurRadius = 9
+    shadow.shadowOffset = CGSize(width: 0, height: -2)
+    shadow.set()
+    commentBubbleColor.setFill()
+    bubble.fill()
+    NSGraphicsContext.restoreGraphicsState()
+    annotation.color.setStroke()
+    bubble.lineWidth = 2
+    bubble.stroke()
+
+    if drawsText {
+      (annotation.text as NSString).draw(
+        in: bubbleRect.insetBy(dx: 12, dy: 10),
+        withAttributes: [
+          .font: commentFont,
+          .foregroundColor: commentTextColor,
+        ]
+      )
+    }
+  }
+
+  private func pointOnRectBoundary(_ rect: CGRect, toward target: CGPoint) -> CGPoint {
+    let center = CGPoint(x: rect.midX, y: rect.midY)
+    let delta = CGPoint(x: target.x - center.x, y: target.y - center.y)
+    guard delta.x != 0 || delta.y != 0 else { return center }
+    let xScale = delta.x == 0 ? CGFloat.greatestFiniteMagnitude : rect.width / 2 / abs(delta.x)
+    let yScale = delta.y == 0 ? CGFloat.greatestFiniteMagnitude : rect.height / 2 / abs(delta.y)
+    let scale = min(xScale, yScale)
+    return CGPoint(x: center.x + delta.x * scale, y: center.y + delta.y * scale)
+  }
+
+  private var commentFont: NSFont {
+    NSFont.systemFont(ofSize: 15, weight: .medium)
+  }
+
+  private var commentBubbleColor: NSColor {
+    usesLightCommentBubble
+      ? NSColor(calibratedWhite: 0.96, alpha: 0.96)
+      : NSColor(calibratedWhite: 0.10, alpha: 0.95)
+  }
+
+  private var commentTextColor: NSColor {
+    usesLightCommentBubble ? .black.withAlphaComponent(0.86) : .white
+  }
+}
+
+private final class ScreenshotCommentTextView: NSTextView {
+  var onCommandReturn: (() -> Void)?
+  var onCommit: (() -> Void)?
+  var onCancel: (() -> Void)?
+
+  override func keyDown(with event: NSEvent) {
+    let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    if event.keyCode == 53 {
+      onCancel?()
+    } else if (event.keyCode == 36 || event.keyCode == 76), modifiers.contains(.command) {
+      onCommandReturn?()
+    } else if event.keyCode == 36 || event.keyCode == 76 {
+      if modifiers.contains(.shift) {
+        super.keyDown(with: event)
+      } else {
+        onCommit?()
+      }
+    } else {
+      super.keyDown(with: event)
     }
   }
 }
@@ -562,4 +922,37 @@ private enum ScreenshotCaptureError: LocalizedError {
   var errorDescription: String? {
     "Betterflow could not find a display to capture."
   }
+}
+
+func screenshotIsMostlyDark(_ image: CGImage) -> Bool {
+  let sampleWidth = 48
+  let sampleHeight = 48
+  let bytesPerPixel = 4
+  let bytesPerRow = sampleWidth * bytesPerPixel
+  var pixels = [UInt8](repeating: 0, count: sampleHeight * bytesPerRow)
+  let rendered = pixels.withUnsafeMutableBytes { bytes in
+    guard let context = CGContext(
+      data: bytes.baseAddress,
+      width: sampleWidth,
+      height: sampleHeight,
+      bitsPerComponent: 8,
+      bytesPerRow: bytesPerRow,
+      space: CGColorSpaceCreateDeviceRGB(),
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        | CGBitmapInfo.byteOrder32Big.rawValue
+    ) else { return false }
+    context.interpolationQuality = .low
+    context.draw(image, in: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleHeight))
+    return true
+  }
+  guard rendered else { return false }
+
+  let darkPixelCount = stride(from: 0, to: pixels.count, by: bytesPerPixel).reduce(0) {
+    count, index in
+    let luminance = 0.2126 * Double(pixels[index])
+      + 0.7152 * Double(pixels[index + 1])
+      + 0.0722 * Double(pixels[index + 2])
+    return count + (luminance < 0.52 * 255 ? 1 : 0)
+  }
+  return darkPixelCount * 2 >= sampleWidth * sampleHeight
 }

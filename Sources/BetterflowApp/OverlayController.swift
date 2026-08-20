@@ -12,7 +12,7 @@ final class OverlayController {
       backing: .buffered,
       defer: false
     )
-    panel.level = .floating
+    panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
     panel.backgroundColor = .clear
     panel.isOpaque = false
     panel.hasShadow = false
