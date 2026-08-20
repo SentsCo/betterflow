@@ -489,7 +489,12 @@ private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
     switch (event.keyCode, modifiers.contains(.command)) {
     case (53, _): delegate?.cancelScreenshot()
     case (36, true), (76, true): delegate?.copyFullDisplay()
-    case (36, false), (76, false): delegate?.beginAreaSelection()
+    case (36, false), (76, false):
+      if isSelecting {
+        delegate?.copyFullDisplay()
+      } else {
+        delegate?.beginAreaSelection()
+      }
     case (6, true): delegate?.undoAnnotation()
     case (35, false): delegate?.selectAnnotationTool(.pen)
     case (0, false): delegate?.selectAnnotationTool(.arrow)

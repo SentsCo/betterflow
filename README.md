@@ -31,7 +31,7 @@ On first launch, grant Microphone and Accessibility access. Betterflow then runs
 - `Escape`: cancel
 - `Z`: toggle cleanup for the current transcription
 - `Command-Shift-2`: annotate a screenshot
-- In screenshot mode: `P` selects pen, `A` arrow, `R` rectangle, `T` comment, `Return` selects an area, `Command-Return` copies the display, `Command-Z` undoes, and `Escape` cancels
+- In screenshot mode: `P` selects pen, `A` arrow, `R` rectangle, `T` comment, `Return` selects an area (or copies the display if already selecting), `Command-Return` copies the display, `Command-Z` undoes, and `Escape` cancels
 - While editing a comment: `Return` commits, `Shift-Return` adds a line break, and `Escape` discards it
 
 The repository also includes `betterflow-bench` for comparing recognition engines. Model downloads and results stay outside Git.
