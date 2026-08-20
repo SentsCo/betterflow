@@ -436,16 +436,20 @@ final class RecognitionCoordinator: ObservableObject {
         transcript = event.text
         return samples.count
       }
-      _ = try await runtime.transcribe(
+      let publishesIntermediateResults = model.publishesIntermediateBatchResults
+      let result = try await runtime.transcribe(
         samples: samples,
         model: model,
         guideWords: guideWords
       ) { [weak self] event in
+        guard publishesIntermediateResults else { return }
         Task { @MainActor in
           guard let self, self.recording, self.currentSession == session else { return }
           self.transcript = event.text
         }
       }
+      guard recording, currentSession == session else { return nil }
+      transcript = result
     } catch {
       guard recording, currentSession == session else { return nil }
       // Short prefixes legitimately produce no transcript. Final recognition reports real failures.
@@ -466,16 +470,19 @@ final class RecognitionCoordinator: ObservableObject {
         final = event.text
         transcript = event.text
       } else {
+        let publishesIntermediateResults = model.publishesIntermediateBatchResults
         final = try await runtime.transcribe(
           samples: samples,
           model: model,
           guideWords: guideWords
         ) { [weak self] event in
+          guard publishesIntermediateResults else { return }
           Task { @MainActor in
             guard let self, self.currentSession == session else { return }
             self.transcript = event.text
           }
         }
+        transcript = final
       }
       guard !final.isEmpty else { throw RecognitionError.noSpeech }
       guard !Task.isCancelled, currentSession == session else { return }
@@ -603,6 +610,17 @@ final class RecognitionCoordinator: ObservableObject {
     state = .idle
     onOverlayVisibility?(false)
     onKeyboardModeChange?(.none)
+  }
+}
+
+private extension BenchmarkModel {
+  var publishesIntermediateBatchResults: Bool {
+    switch self {
+    case .appleSpeech, .appleDictation:
+      false
+    default:
+      true
+    }
   }
 }
 

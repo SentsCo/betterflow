@@ -234,8 +234,11 @@ private struct AppleResults: Sendable {
     onHypothesis: @escaping @Sendable (HypothesisEvent) -> Void
   ) {
     if isFinal {
+      let previousText = text
       finalized += resultText
-      volatile = ""
+      volatile = previousText.hasPrefix(finalized)
+        ? String(previousText.dropFirst(finalized.count))
+        : ""
     } else {
       volatile = resultText
     }
