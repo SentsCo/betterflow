@@ -13,7 +13,7 @@ final class AppleSpeechAdapter: ModelAdapter, @unchecked Sendable {
     self.model = model
   }
 
-  func prepare(guideWords: [String]) async throws {
+  func prepare(guideWords: [String], strength _: GuideWordStrength) async throws {
     self.guideWords = guideWords
     guard #available(macOS 26.0, *) else {
       throw AdapterError.unsupported("\(model.shortName) requires macOS 26 or newer.")

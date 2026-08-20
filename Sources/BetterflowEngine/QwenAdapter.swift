@@ -6,9 +6,11 @@ final class QwenAdapter: ModelAdapter, @unchecked Sendable {
 
   private var worker: QwenWorker?
   private var guideWords: [String] = []
+  private var strength = GuideWordStrength.normal
 
-  func prepare(guideWords: [String]) async throws {
+  func prepare(guideWords: [String], strength: GuideWordStrength) async throws {
     self.guideWords = guideWords
+    self.strength = strength
     let worker = try QwenWorker()
     try await worker.prepare()
     self.worker = worker
@@ -37,8 +39,7 @@ final class QwenAdapter: ModelAdapter, @unchecked Sendable {
       try write(samples: Array(audio.samples.prefix(end)), to: audioURL)
       let response = try await worker.transcribe(
         audioPath: audioURL.path,
-        context: guidance == .on
-          ? "Important vocabulary: \(guideWords.joined(separator: ", "))." : nil
+        context: guidance == .on ? guidancePrompt : nil
       )
       inferenceMilliseconds += response.inferenceMilliseconds
       let isFinal = end == audio.samples.count
@@ -59,6 +60,16 @@ final class QwenAdapter: ModelAdapter, @unchecked Sendable {
       inferenceMilliseconds: inferenceMilliseconds,
       guidanceMechanism: guidance == .on ? "Qwen model system prompt" : "disabled"
     )
+  }
+
+  private var guidancePrompt: String {
+    let vocabulary = guideWords.joined(separator: ", ")
+    return switch strength {
+    case .normal:
+      "Important vocabulary: \(vocabulary)."
+    case .conservative:
+      "Use these spellings only when clearly supported by the speech. Do not introduce them otherwise: \(vocabulary)."
+    }
   }
 
   func close() async {

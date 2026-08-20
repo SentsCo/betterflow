@@ -12,7 +12,7 @@ final class FluidStreamingAdapter: ModelAdapter, @unchecked Sendable {
     self.model = model
   }
 
-  func prepare(guideWords _: [String]) async throws {
+  func prepare(guideWords _: [String], strength _: GuideWordStrength) async throws {
     let manager: any StreamingAsrManager
     switch model {
     case .parakeetEou:

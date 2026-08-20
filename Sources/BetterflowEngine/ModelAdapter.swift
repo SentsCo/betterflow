@@ -10,7 +10,7 @@ public struct AdapterOutput: Sendable {
 
 public protocol ModelAdapter: AnyObject, Sendable {
   var model: BenchmarkModel { get }
-  func prepare(guideWords: [String]) async throws
+  func prepare(guideWords: [String], strength: GuideWordStrength) async throws
   func transcribe(
     audio: AudioData,
     guidance: GuidanceMode,
@@ -28,6 +28,10 @@ public protocol LiveTranscriptionSession: Actor {
 }
 
 extension ModelAdapter {
+  public func prepare(guideWords: [String]) async throws {
+    try await prepare(guideWords: guideWords, strength: .normal)
+  }
+
   public func makeLiveSession(guidance _: GuidanceMode) async throws
     -> (any LiveTranscriptionSession)?
   {

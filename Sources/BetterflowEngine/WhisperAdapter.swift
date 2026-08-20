@@ -8,7 +8,7 @@ final class WhisperAdapter: ModelAdapter, @unchecked Sendable {
   private var whisper: WhisperKit?
   private var promptTokens: [Int] = []
 
-  func prepare(guideWords: [String]) async throws {
+  func prepare(guideWords: [String], strength: GuideWordStrength) async throws {
     let whisper = try await WhisperKit(
       model: "large-v3-v20240930_turbo",
       verbose: false,
@@ -16,7 +16,14 @@ final class WhisperAdapter: ModelAdapter, @unchecked Sendable {
       load: true
     )
     guard let tokenizer = whisper.tokenizer else { throw AdapterError.missingTokenizer }
-    let prompt = " Vocabulary: \(guideWords.joined(separator: ", "))."
+    let vocabulary = guideWords.joined(separator: ", ")
+    let prompt =
+      switch strength {
+      case .normal:
+        " Vocabulary: \(vocabulary)."
+      case .conservative:
+        " Use these spellings only when clearly spoken: \(vocabulary)."
+      }
     promptTokens = tokenizer.encode(text: prompt)
       .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
     self.whisper = whisper

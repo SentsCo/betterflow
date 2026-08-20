@@ -14,11 +14,13 @@ final class MoonshineAdapter: ModelAdapter, @unchecked Sendable {
     self.architecture = architecture
   }
 
-  func prepare(guideWords: [String]) async throws {
+  func prepare(guideWords: [String], strength: GuideWordStrength) async throws {
     self.guideWords = guideWords
+    let boost = strength == .conservative ? "1.0" : "2.0"
     transcriber = try await Transcriber.load(
       language: "en",
-      modelArch: architecture
+      modelArch: architecture,
+      options: [TranscriberOption(name: "keyterm_boost", value: boost)]
     )
   }
 

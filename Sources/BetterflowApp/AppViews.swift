@@ -73,7 +73,7 @@ struct SettingsView: View {
         cleanupDownloads: model.cleanupModelDownloads
       )
       .tabItem { Label("Models", systemImage: "waveform.badge.magnifyingglass") }
-      VocabularySettingsView(settings: model.settings)
+      VocabularySettingsView(model: model, settings: model.settings)
         .tabItem { Label("Vocabulary", systemImage: "text.book.closed") }
       HistorySettingsView(model: model, history: model.history)
         .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
@@ -518,10 +518,22 @@ private struct CapabilityRow: View {
 }
 
 private struct VocabularySettingsView: View {
+  @ObservedObject var model: AppModel
   @ObservedObject var settings: AppSettings
 
   var body: some View {
     Form {
+      if settings.selectedModel.supportsGuideWordStrength {
+        Section("Strength for \(settings.selectedModel.displayName)") {
+          Picker("Strength", selection: strengthBinding) {
+            ForEach(GuideWordStrength.allCases) { strength in
+              Text(strength.displayName).tag(strength)
+            }
+          }
+          .pickerStyle(.segmented)
+        }
+      }
+
       Section {
         ForEach(settings.guideWords.indices, id: \.self) { index in
           HStack {
@@ -549,6 +561,16 @@ private struct VocabularySettingsView: View {
       }
     }
     .formStyle(.grouped)
+  }
+
+  private var strengthBinding: Binding<GuideWordStrength> {
+    Binding(
+      get: { settings.guideWordStrength(for: settings.selectedModel) },
+      set: { strength in
+        settings.setGuideWordStrength(strength, for: settings.selectedModel)
+        model.coordinator.prepareSelectedModel()
+      }
+    )
   }
 }
 

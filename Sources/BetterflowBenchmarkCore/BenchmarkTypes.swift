@@ -87,6 +87,15 @@ public enum BenchmarkModel: String, Codable, CaseIterable, Sendable {
     }
   }
 
+  public var supportsGuideWordStrength: Bool {
+    switch self {
+    case .parakeet, .moonshineSmall, .moonshineMedium, .whisper, .qwen:
+      true
+    case .appleSpeech, .appleDictation, .parakeetEou, .nemotron:
+      false
+    }
+  }
+
   public var revisionStrategy: String {
     switch self {
     case .parakeet: "growing-prefix re-decode"
@@ -131,6 +140,20 @@ public enum BenchmarkModel: String, Codable, CaseIterable, Sendable {
 public enum GuidanceMode: String, Codable, CaseIterable, Sendable {
   case off
   case on
+}
+
+public enum GuideWordStrength: String, Codable, CaseIterable, Identifiable, Sendable {
+  case normal
+  case conservative
+
+  public var id: String { rawValue }
+
+  public var displayName: String {
+    switch self {
+    case .normal: "Normal"
+    case .conservative: "Conservative"
+    }
+  }
 }
 
 public struct BenchmarkManifest: Codable, Sendable {

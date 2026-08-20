@@ -59,9 +59,17 @@ private actor RecognitionRuntime {
   private var liveSampleCount = 0
   private var loadedModel: BenchmarkModel?
   private var loadedGuideWords: [String] = []
+  private var loadedGuideWordStrength = GuideWordStrength.normal
 
-  func prepare(model: BenchmarkModel, guideWords: [String]) async throws {
-    guard loadedModel != model || loadedGuideWords != guideWords || adapter == nil else { return }
+  func prepare(
+    model: BenchmarkModel,
+    guideWords: [String],
+    guideWordStrength: GuideWordStrength
+  ) async throws {
+    guard
+      loadedModel != model || loadedGuideWords != guideWords
+        || loadedGuideWordStrength != guideWordStrength || adapter == nil
+    else { return }
     await liveSession?.close()
     liveSession = nil
     liveSampleCount = 0
@@ -70,18 +78,27 @@ private actor RecognitionRuntime {
     loadedModel = nil
     let newAdapter = AdapterFactory.make(model)
     do {
-      try await newAdapter.prepare(guideWords: guideWords)
+      try await newAdapter.prepare(guideWords: guideWords, strength: guideWordStrength)
       adapter = newAdapter
       loadedModel = model
       loadedGuideWords = guideWords
+      loadedGuideWordStrength = guideWordStrength
     } catch {
       await newAdapter.close()
       throw error
     }
   }
 
-  func startLive(model: BenchmarkModel, guideWords: [String]) async throws {
-    try await prepare(model: model, guideWords: guideWords)
+  func startLive(
+    model: BenchmarkModel,
+    guideWords: [String],
+    guideWordStrength: GuideWordStrength
+  ) async throws {
+    try await prepare(
+      model: model,
+      guideWords: guideWords,
+      guideWordStrength: guideWordStrength
+    )
     await liveSession?.close()
     liveSession = try await adapter?.makeLiveSession(
       guidance: model.supportsGuidance ? .on : .off)
@@ -111,9 +128,14 @@ private actor RecognitionRuntime {
     samples: [Float],
     model: BenchmarkModel,
     guideWords: [String],
+    guideWordStrength: GuideWordStrength,
     onHypothesis: @escaping @Sendable (HypothesisEvent) -> Void
   ) async throws -> String {
-    try await prepare(model: model, guideWords: guideWords)
+    try await prepare(
+      model: model,
+      guideWords: guideWords,
+      guideWordStrength: guideWordStrength
+    )
     guard let adapter else { throw RecognitionError.modelUnavailable }
     let audio = AudioData(
       samples: samples,
@@ -142,6 +164,7 @@ private actor RecognitionRuntime {
     adapter = nil
     loadedModel = nil
     loadedGuideWords = []
+    loadedGuideWordStrength = .normal
   }
 
   func cancelLive() async {
@@ -201,6 +224,7 @@ final class RecognitionCoordinator: ObservableObject {
     state = .preparing
     let model = settings.selectedModel
     let guideWords = settings.cleanGuideWords()
+    let guideWordStrength = settings.guideWordStrength(for: model)
     modelPreparationTask = Task {
       guard await ModelStorage.isDownloaded(model) else {
         if state == .preparing, settings.selectedModel == model { state = .idle }
@@ -208,7 +232,11 @@ final class RecognitionCoordinator: ObservableObject {
       }
       guard !Task.isCancelled, settings.selectedModel == model else { return }
       do {
-        try await runtime.prepare(model: model, guideWords: guideWords)
+        try await runtime.prepare(
+          model: model,
+          guideWords: guideWords,
+          guideWordStrength: guideWordStrength
+        )
         guard !Task.isCancelled else { return }
         if state == .preparing, settings.selectedModel == model {
           state = .idle
@@ -422,7 +450,11 @@ final class RecognitionCoordinator: ObservableObject {
       state = .listening
       startAudioMeter(session: session)
       let guideWords = settings.cleanGuideWords()
-      try await runtime.startLive(model: model, guideWords: guideWords)
+      try await runtime.startLive(
+        model: model,
+        guideWords: guideWords,
+        guideWordStrength: settings.guideWordStrength(for: model)
+      )
       guard recording, currentSession == session else { return }
       liveTask = Task.detached(priority: .utility) { [weak self] in
         var inferenceGate = LiveInferenceGate(sampleRate: MicrophoneCapture.sampleRate)
@@ -452,6 +484,7 @@ final class RecognitionCoordinator: ObservableObject {
     guard !samples.isEmpty else { return nil }
     let model = settings.selectedModel
     let guideWords = settings.cleanGuideWords()
+    let guideWordStrength = settings.guideWordStrength(for: model)
     do {
       if let event = try await runtime.updateLive(samples: samples, final: false) {
         guard recording, currentSession == session else { return nil }
@@ -462,7 +495,8 @@ final class RecognitionCoordinator: ObservableObject {
       let result = try await runtime.transcribe(
         samples: samples,
         model: model,
-        guideWords: guideWords
+        guideWords: guideWords,
+        guideWordStrength: guideWordStrength
       ) { [weak self] event in
         guard publishesIntermediateResults else { return }
         Task { @MainActor in
@@ -486,6 +520,7 @@ final class RecognitionCoordinator: ObservableObject {
     }
     let model = settings.selectedModel
     let guideWords = settings.cleanGuideWords()
+    let guideWordStrength = settings.guideWordStrength(for: model)
     do {
       let final: String
       if let event = try await runtime.updateLive(samples: samples, final: true) {
@@ -496,7 +531,8 @@ final class RecognitionCoordinator: ObservableObject {
         final = try await runtime.transcribe(
           samples: samples,
           model: model,
-          guideWords: guideWords
+          guideWords: guideWords,
+          guideWordStrength: guideWordStrength
         ) { [weak self] event in
           guard publishesIntermediateResults else { return }
           Task { @MainActor in

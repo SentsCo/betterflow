@@ -60,6 +60,7 @@ final class AppSettings: ObservableObject {
   private enum Key {
     static let selectedModel = "selectedModel"
     static let guideWords = "guideWords"
+    static let guideWordStrengths = "guideWordStrengths"
     static let priorityEnabled = "microphonePriorityEnabled"
     static let microphonePriority = "microphonePriority"
     static let knownMicrophoneNames = "knownMicrophoneNames"
@@ -79,6 +80,10 @@ final class AppSettings: ObservableObject {
 
   @Published var guideWords: [String] {
     didSet { defaults.set(guideWords, forKey: Key.guideWords) }
+  }
+
+  @Published private(set) var guideWordStrengths: [String: String] {
+    didSet { defaults.set(guideWordStrengths, forKey: Key.guideWordStrengths) }
   }
 
   @Published var microphonePriorityEnabled: Bool {
@@ -125,6 +130,8 @@ final class AppSettings: ObservableObject {
     guideWords =
       defaults.stringArray(forKey: Key.guideWords)
       ?? ["Zach", "Sara", "WorkflowDog", "TanStack", "Postgres"]
+    guideWordStrengths =
+      defaults.dictionary(forKey: Key.guideWordStrengths) as? [String: String] ?? [:]
     microphonePriorityEnabled = defaults.bool(forKey: Key.priorityEnabled)
     microphonePriority = defaults.stringArray(forKey: Key.microphonePriority) ?? []
     knownMicrophoneNames =
@@ -157,6 +164,15 @@ final class AppSettings: ObservableObject {
     guideWords
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
+  }
+
+  func guideWordStrength(for model: BenchmarkModel) -> GuideWordStrength {
+    guideWordStrengths[model.rawValue]
+      .flatMap(GuideWordStrength.init(rawValue:)) ?? .normal
+  }
+
+  func setGuideWordStrength(_ strength: GuideWordStrength, for model: BenchmarkModel) {
+    guideWordStrengths[model.rawValue] = strength.rawValue
   }
 
   func rememberMicrophones(_ devices: [AudioInputDevice]) {

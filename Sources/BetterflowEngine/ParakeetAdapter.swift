@@ -8,7 +8,7 @@ final class ParakeetAdapter: ModelAdapter, @unchecked Sendable {
   private var manager: AsrManager?
   private var boosting: VocabularyBoostingSession?
 
-  func prepare(guideWords: [String]) async throws {
+  func prepare(guideWords: [String], strength: GuideWordStrength) async throws {
     let models = try await AsrModels.downloadAndLoad(version: .tdtCtc110m)
     manager = AsrManager(models: models)
 
@@ -24,12 +24,26 @@ final class ParakeetAdapter: ModelAdapter, @unchecked Sendable {
     boosting = try await VocabularyBoostingSession(
       vocabulary: loaded.vocab,
       ctcModels: loaded.models,
-      config: VocabularyRescorer.Config(
+      config: rescorerConfig(for: strength)
+    )
+  }
+
+  private func rescorerConfig(for strength: GuideWordStrength) -> VocabularyRescorer.Config {
+    switch strength {
+    case .normal:
+      VocabularyRescorer.Config(
         shortTermCbwTaperPivot: 5,
         spotterRescueMinSimilarity: 0.30,
         spotterRescueMultiWordMinSimilarity: 0.50
       )
-    )
+    case .conservative:
+      VocabularyRescorer.Config(
+        shortTermCbwTaperPivot: 5,
+        spotterRescueMinSimilarity: 0.30,
+        spotterRescueMultiWordMinSimilarity: 0.50,
+        spotterRescueEnabled: false
+      )
+    }
   }
 
   func transcribe(
