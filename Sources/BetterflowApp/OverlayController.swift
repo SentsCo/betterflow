@@ -24,7 +24,9 @@ final class OverlayController {
 
   func show() {
     position()
+    panel.contentView?.layoutSubtreeIfNeeded()
     panel.orderFrontRegardless()
+    panel.displayIfNeeded()
   }
 
   func hide() {

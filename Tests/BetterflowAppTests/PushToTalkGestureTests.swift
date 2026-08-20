@@ -7,22 +7,20 @@ import Testing
 func pushToTalkGestureLatchesOnTapAndFinishesOnHold() {
   var gesture = PushToTalkGesture()
 
-  gesture.press(dictationStarted: true)
-  #expect(gesture.release() == .latch)
+  gesture.press(dictationStarted: true, at: 10)
+  #expect(gesture.release(at: 10.1, holdThreshold: 0.25) == .latch)
 
-  gesture.press(dictationStarted: true)
-  gesture.holdThresholdReached()
-  #expect(gesture.release() == .finish)
+  gesture.press(dictationStarted: true, at: 20)
+  #expect(gesture.release(at: 20.3, holdThreshold: 0.25) == .finish)
 }
 
 @Test
 func pushToTalkGestureIgnoresPressWhenDictationDidNotStart() {
   var gesture = PushToTalkGesture()
 
-  gesture.press(dictationStarted: false)
-  gesture.holdThresholdReached()
+  gesture.press(dictationStarted: false, at: 10)
 
-  #expect(gesture.release() == .none)
+  #expect(gesture.release(at: 11, holdThreshold: 0.25) == .none)
 }
 
 @Test

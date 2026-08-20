@@ -53,30 +53,29 @@ struct PushToTalkGesture {
 
   private enum Phase {
     case idle
-    case tapped
-    case held
+    case pressed(at: TimeInterval)
     case ignored
   }
 
   private var phase = Phase.idle
 
   var isTracking: Bool {
-    phase == .tapped
+    if case .pressed = phase { return true }
+    return false
   }
 
-  mutating func press(dictationStarted: Bool) {
-    phase = dictationStarted ? .tapped : .ignored
+  mutating func press(dictationStarted: Bool, at timestamp: TimeInterval) {
+    phase = dictationStarted ? .pressed(at: timestamp) : .ignored
   }
 
-  mutating func holdThresholdReached() {
-    if phase == .tapped { phase = .held }
-  }
-
-  mutating func release() -> ReleaseAction {
+  mutating func release(
+    at timestamp: TimeInterval,
+    holdThreshold: TimeInterval
+  ) -> ReleaseAction {
     defer { phase = .idle }
     switch phase {
-    case .tapped: return .latch
-    case .held: return .finish
+    case .pressed(let pressedAt):
+      return timestamp - pressedAt >= holdThreshold ? .finish : .latch
     case .idle, .ignored: return .none
     }
   }
@@ -88,7 +87,7 @@ struct PushToTalkGesture {
 
 @MainActor
 final class HotkeyMonitor {
-  private static let holdThreshold = Duration.milliseconds(250)
+  private static let holdThreshold = 0.25
 
   private let key: () -> PushToTalkKey
   private let onPress: () -> Bool
@@ -98,7 +97,6 @@ final class HotkeyMonitor {
   private var localMonitor: Any?
   private var eventTap: CFMachPort?
   private var eventTapSource: CFRunLoopSource?
-  private var holdTask: Task<Void, Never>?
   private var gesture = PushToTalkGesture()
   private var pressed = false
 
@@ -146,8 +144,6 @@ final class HotkeyMonitor {
     localMonitor = nil
     eventTap = nil
     eventTapSource = nil
-    holdTask?.cancel()
-    holdTask = nil
     pressed = false
     gesture.cancel()
     commandInterceptor.setMode(.none)
@@ -156,8 +152,6 @@ final class HotkeyMonitor {
   func setDictationMode(_ mode: DictationKeyboardMode) {
     commandInterceptor.setMode(mode, ignoring: key().eventFlag)
     if mode != .recording {
-      holdTask?.cancel()
-      holdTask = nil
       gesture.cancel()
     }
   }
@@ -211,19 +205,11 @@ final class HotkeyMonitor {
     guard isDown != pressed else { return }
     pressed = isDown
     if isDown {
-      gesture.press(dictationStarted: onPress())
-      guard gesture.isTracking else { return }
-      holdTask = Task { [weak self] in
-        try? await Task.sleep(for: Self.holdThreshold)
-        guard !Task.isCancelled else { return }
-        self?.gesture.holdThresholdReached()
-      }
+      gesture.press(dictationStarted: onPress(), at: event.timestamp)
       return
     }
 
-    holdTask?.cancel()
-    holdTask = nil
-    switch gesture.release() {
+    switch gesture.release(at: event.timestamp, holdThreshold: Self.holdThreshold) {
     case .latch: break
     case .finish: onHoldRelease()
     case .none: break
