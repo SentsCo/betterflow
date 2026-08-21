@@ -171,6 +171,7 @@ final class AppModel: ObservableObject {
       }.value
       guard !Task.isCancelled else { return }
       audioDevices = devices
+      coordinator.updateAudioDevices(devices)
       settings.rememberMicrophones(devices)
       audioDeviceRefreshTask = nil
     }

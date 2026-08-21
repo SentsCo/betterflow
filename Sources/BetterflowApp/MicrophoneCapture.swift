@@ -8,6 +8,10 @@ private let microphoneInputCallback: AudioQueueInputCallback = {
   capture.receive(buffer: buffer, queue: queue)
 }
 
+private struct SendableAudioQueue: @unchecked Sendable {
+  let reference: AudioQueueRef
+}
+
 actor MicrophoneCaptureLifecycle {
   private let capture: MicrophoneCapture
 
@@ -29,6 +33,10 @@ final class MicrophoneCapture: @unchecked Sendable {
   static let bufferDurationSeconds = 0.03
 
   private let lock = NSLock()
+  private let teardownQueue = DispatchQueue(
+    label: "com.zachsents.betterflow.microphone-teardown",
+    qos: .utility
+  )
   private var queue: AudioQueueRef?
   private var samples: [Float] = []
   private var active = false
@@ -122,22 +130,24 @@ final class MicrophoneCapture: @unchecked Sendable {
 
   @discardableResult
   func stop() -> [Float] {
-    let (currentQueue, continuation) = lock.withLock {
+    let (currentQueue, continuation, capturedSamples) = lock.withLock {
       active = false
       let continuation = sampleUpdatesContinuation
       sampleUpdatesContinuation = nil
-      return (queue, continuation)
+      let currentQueue = queue
+      queue = nil
+      latestLevel = 0
+      return (currentQueue, continuation, samples)
     }
     continuation?.finish()
     if let currentQueue {
-      AudioQueueStop(currentQueue, true)
-      AudioQueueDispose(currentQueue, true)
+      let queueToTeardown = SendableAudioQueue(reference: currentQueue)
+      teardownQueue.async {
+        AudioQueueStop(queueToTeardown.reference, true)
+        AudioQueueDispose(queueToTeardown.reference, true)
+      }
     }
-    return lock.withLock {
-      queue = nil
-      latestLevel = 0
-      return samples
-    }
+    return capturedSamples
   }
 
   func snapshot() -> [Float] {
@@ -160,10 +170,10 @@ final class MicrophoneCapture: @unchecked Sendable {
     let count = Int(buffer.pointee.mAudioDataByteSize) / MemoryLayout<Float>.size
     guard count > 0 else { return }
     let pointer = buffer.pointee.mAudioData.assumingMemoryBound(to: Float.self)
-    let chunk = Array(UnsafeBufferPointer(start: pointer, count: count))
+    let chunk = UnsafeBufferPointer(start: pointer, count: count)
     let level = sqrt(chunk.reduce(0.0) { $0 + Double($1 * $1) } / Double(count))
     let update = lock.withLock { () -> (AsyncStream<Int>.Continuation, Int)? in
-      guard active, let sampleUpdatesContinuation else { return nil }
+      guard active, self.queue == queue, let sampleUpdatesContinuation else { return nil }
       samples.append(contentsOf: chunk)
       latestLevel = min(1, level * 8)
       return (sampleUpdatesContinuation, samples.count)

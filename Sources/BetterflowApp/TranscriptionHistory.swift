@@ -14,6 +14,10 @@ final class TranscriptionHistory: ObservableObject {
   @Published private(set) var persistenceError: String?
 
   private let fileURL: URL
+  private let persistenceQueue = DispatchQueue(
+    label: "com.zachsents.betterflow.transcription-history",
+    qos: .utility
+  )
 
   init(fileURL: URL = TranscriptionHistory.defaultFileURL) {
     self.fileURL = fileURL
@@ -43,16 +47,30 @@ final class TranscriptionHistory: ObservableObject {
     save()
   }
 
+  func waitForPersistence() async {
+    await withCheckedContinuation { continuation in
+      persistenceQueue.async { continuation.resume() }
+    }
+  }
+
   private func save() {
-    do {
-      try FileManager.default.createDirectory(
-        at: fileURL.deletingLastPathComponent(),
-        withIntermediateDirectories: true
-      )
-      try JSONEncoder().encode(items).write(to: fileURL, options: .atomic)
-      persistenceError = nil
-    } catch {
-      persistenceError = error.localizedDescription
+    let fileURL = fileURL
+    let items = items
+    persistenceQueue.async { [weak self] in
+      let errorMessage: String?
+      do {
+        try FileManager.default.createDirectory(
+          at: fileURL.deletingLastPathComponent(),
+          withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(items).write(to: fileURL, options: .atomic)
+        errorMessage = nil
+      } catch {
+        errorMessage = error.localizedDescription
+      }
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated { self?.persistenceError = errorMessage }
+      }
     }
   }
 

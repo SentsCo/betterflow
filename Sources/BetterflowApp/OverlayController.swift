@@ -1,5 +1,11 @@
 import AppKit
+import OSLog
 import SwiftUI
+
+private let overlayLogger = Logger(
+  subsystem: "com.zachsents.betterflow",
+  category: "Overlay"
+)
 
 @MainActor
 final class OverlayController {
@@ -23,10 +29,12 @@ final class OverlayController {
   }
 
   func show() {
+    let started = ContinuousClock.now
     position()
     panel.contentView?.layoutSubtreeIfNeeded()
     panel.orderFrontRegardless()
     panel.displayIfNeeded()
+    overlayLogger.info("Overlay shown elapsedMs=\(started.duration(to: .now).milliseconds)")
   }
 
   func hide() {

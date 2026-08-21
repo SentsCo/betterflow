@@ -232,6 +232,7 @@ final class RecognitionCoordinator: ObservableObject {
   private var cloudProviderForSession = CloudTranscriptionProvider.deepgram
   private var cloudGuideWordStrengthForSession = GuideWordStrength.normal
   private var cloudSession: CloudTranscriptionSession?
+  private var availableAudioDevices: [AudioInputDevice] = []
   private var returnAfterInsertion = false
   private var dictationActive = false
   private var recording = false
@@ -298,6 +299,10 @@ final class RecognitionCoordinator: ObservableObject {
     }
   }
 
+  func updateAudioDevices(_ devices: [AudioInputDevice]) {
+    availableAudioDevices = devices
+  }
+
   func unloadModel(_ model: BenchmarkModel) async throws {
     guard !recording, !dictationActive, state != .finalizing else {
       throw RecognitionError.modelInUse
@@ -317,24 +322,6 @@ final class RecognitionCoordinator: ObservableObject {
     let session = UUID()
     currentSession = session
     recognitionLogger.info("Dictation started session=\(session.uuidString, privacy: .public)")
-    insertionTargetTask?.cancel()
-    insertionTargetTask = nil
-    insertionTarget = TextInserter.captureTarget(context: "recording-start")
-    if insertionTarget == nil {
-      insertionTargetTask = Task { [weak self] in
-        let retryDelays = [40, 160, 800, 1_200]
-        for (index, delay) in retryDelays.enumerated() {
-          try? await Task.sleep(for: .milliseconds(delay))
-          guard !Task.isCancelled, let self, self.currentSession == session else { return }
-          if let target = TextInserter.captureTarget(context: "recording-retry-\(index + 1)") {
-            self.insertionTarget = target
-            self.insertionTargetTask = nil
-            return
-          }
-        }
-        self?.insertionTargetTask = nil
-      }
-    }
     cleanupEnabled = settings.cleanupEnabledByDefault
     cleanupModelForSession = settings.cleanupModel
     localModelForSession = settings.selectedModel
@@ -351,6 +338,21 @@ final class RecognitionCoordinator: ObservableObject {
     if settings.showOverlay { onOverlayVisibility?(true) }
     startupTask = Task { [weak self] in
       await self?.beginCapture(session: session)
+    }
+    insertionTargetTask?.cancel()
+    insertionTargetTask = Task { [weak self] in
+      let retryDelays = [0, 40, 160, 800, 1_200]
+      for (index, delay) in retryDelays.enumerated() {
+        if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+        guard !Task.isCancelled, let self, self.currentSession == session else { return }
+        let context = index == 0 ? "recording-start" : "recording-retry-\(index)"
+        if let target = TextInserter.captureTarget(context: context) {
+          self.insertionTarget = target
+          self.insertionTargetTask = nil
+          return
+        }
+      }
+      self?.insertionTargetTask = nil
     }
     sounds.play(.recordingStarted)
   }
@@ -383,12 +385,11 @@ final class RecognitionCoordinator: ObservableObject {
     state = .finalizing
     onKeyboardModeChange?(.finalizing)
     let session = currentSession
-    let captureLifecycle = captureLifecycle
+    let samples = capture.stop()
+    recognitionLogger.info(
+      "Capture stopped samples=\(samples.count) elapsedMs=\(finishRequested.duration(to: .now).milliseconds)"
+    )
     finalizationTask = Task { [weak self] in
-      let samples = await captureLifecycle.stop()
-      recognitionLogger.info(
-        "Capture stopped samples=\(samples.count) elapsedMs=\(finishRequested.duration(to: .now).milliseconds)"
-      )
       await pendingStartup?.value
       await pendingLiveUpdate?.value
       recognitionLogger.info(
@@ -505,6 +506,7 @@ final class RecognitionCoordinator: ObservableObject {
     }
     guard dictationActive, currentSession == session else { return }
     let device = AudioDeviceCatalog.selectedDevice(
+      in: availableAudioDevices,
       priorityEnabled: settings.microphonePriorityEnabled,
       priority: settings.microphonePriority
     )
@@ -777,11 +779,6 @@ final class RecognitionCoordinator: ObservableObject {
         appliedCleanup = false
       }
       transcript = deliveredTranscript
-      history.add(
-        deliveredTranscript,
-        rawText: appliedCleanup ? rawTranscript : nil,
-        recognitionEngine: recognitionEngine
-      )
       let target = insertionTarget
       insertionTargetTask?.cancel()
       insertionTargetTask = nil
@@ -796,6 +793,11 @@ final class RecognitionCoordinator: ObservableObject {
       state = .idle
       onKeyboardModeChange?(.none)
       sounds.play(delivery == .inserted ? .textInserted : .insertionFallback)
+      history.add(
+        deliveredTranscript,
+        rawText: appliedCleanup ? rawTranscript : nil,
+        recognitionEngine: recognitionEngine
+      )
       recognitionLogger.info(
         "Dictation delivered result=\(String(describing: delivery), privacy: .public)"
       )

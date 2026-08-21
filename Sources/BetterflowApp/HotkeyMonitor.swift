@@ -1,6 +1,11 @@
 import AppKit
+import OSLog
 
 private let returnKeyCodes: Set<Int64> = [36, 76]
+private let hotkeyLogger = Logger(
+  subsystem: "com.zachsents.betterflow",
+  category: "Hotkey"
+)
 
 enum DictationKeyboardMode: Sendable {
   case none
@@ -102,7 +107,8 @@ final class HotkeyMonitor {
     stop()
     globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
       [weak self] event in
-      Task { @MainActor in self?.handle(event) }
+      // AppKit guarantees event monitor callbacks arrive on the main thread.
+      MainActor.assumeIsolated { self?.handle(event) }
     }
     localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
       self?.handle(event)
@@ -182,7 +188,14 @@ final class HotkeyMonitor {
     }
     guard isDown != pressed else { return }
     pressed = isDown
-    if isDown { onToggle() }
+    if isDown {
+      let eventAgeMilliseconds = max(
+        0,
+        (ProcessInfo.processInfo.systemUptime - event.timestamp) * 1_000
+      )
+      hotkeyLogger.info("Dictation hotkey received eventAgeMs=\(eventAgeMilliseconds)")
+      onToggle()
+    }
   }
 }
 
@@ -257,7 +270,8 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
       return (true, isFirstPress ? .dictation(command) : nil)
     }
     if let command = result.command {
-      Task { @MainActor in
+      // This interceptor is installed on the main run loop.
+      MainActor.assumeIsolated {
         switch command {
         case .screenshot: onScreenshot()
         case .dictation(let command):

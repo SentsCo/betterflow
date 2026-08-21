@@ -5,7 +5,7 @@ import Testing
 
 @MainActor
 @Test
-func transcriptionHistoryPersistsNewestFirst() throws {
+func transcriptionHistoryPersistsNewestFirst() async throws {
   let directory = FileManager.default.temporaryDirectory
     .appendingPathComponent(UUID().uuidString, isDirectory: true)
   let fileURL = directory.appendingPathComponent("history.json")
@@ -18,6 +18,7 @@ func transcriptionHistoryPersistsNewestFirst() throws {
     rawText: "Um latest transcription",
     recognitionEngine: "OpenAI GPT Live Transcribe"
   )
+  await history.waitForPersistence()
 
   #expect(history.items.map(\.text) == ["Latest transcription", "First transcription"])
   #expect(history.persistenceError == nil)

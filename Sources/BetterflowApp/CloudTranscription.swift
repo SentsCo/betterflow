@@ -698,11 +698,15 @@ actor CloudTranscriptionSession {
   }
 
   private func pcm16Data(_ samples: [Float]) -> Data {
-    let values = samples.map { sample -> Int16 in
-      let scaled = Int((max(-1, min(1, sample)) * Float(Int16.max)).rounded())
-      return Int16(clamping: scaled).littleEndian
+    var data = Data(count: samples.count * MemoryLayout<Int16>.size)
+    data.withUnsafeMutableBytes { bytes in
+      let values = bytes.bindMemory(to: Int16.self)
+      for (index, sample) in samples.enumerated() {
+        let scaled = Int((max(-1, min(1, sample)) * Float(Int16.max)).rounded())
+        values[index] = Int16(clamping: scaled).littleEndian
+      }
     }
-    return values.withUnsafeBytes { Data($0) }
+    return data
   }
 
   private func clean(_ text: String) -> String {

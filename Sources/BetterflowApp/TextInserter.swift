@@ -115,12 +115,13 @@ enum TextInserter {
       )
       return nil
     }
+    let focusedSummary = summary(of: focusedElement)
     textInsertionLogger.info(
-      "Capture [\(context, privacy: .public)] found target via \(captureSource, privacy: .public): \(summary(of: focusedElement), privacy: .public)"
+      "Capture [\(context, privacy: .public)] found target via \(captureSource, privacy: .public): \(focusedSummary, privacy: .public)"
     )
     guard isEditable(focusedElement) else {
       textInsertionLogger.error(
-        "Capture [\(context, privacy: .public)] rejected non-editable target: \(summary(of: focusedElement), privacy: .public), attributes=\(attributeNames(of: focusedElement), privacy: .public)"
+        "Capture [\(context, privacy: .public)] rejected non-editable target: \(focusedSummary, privacy: .public)"
       )
       return nil
     }
