@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
   let history: TranscriptionHistory
   let sounds: AppSoundPlayer
   let cleanupRuntime: TranscriptCleanupRuntime
+  let cloudCredentials: CloudCredentials
   let coordinator: RecognitionCoordinator
   let modelDownloads: ModelDownloadManager
   let cleanupModelDownloads: CleanupModelDownloadManager
@@ -37,11 +38,14 @@ final class AppModel: ObservableObject {
     self.sounds = sounds
     let cleanupRuntime = TranscriptCleanupRuntime()
     self.cleanupRuntime = cleanupRuntime
+    let cloudCredentials = CloudCredentials()
+    self.cloudCredentials = cloudCredentials
     coordinator = RecognitionCoordinator(
       settings: settings,
       history: history,
       sounds: sounds,
-      cleanupRuntime: cleanupRuntime
+      cleanupRuntime: cleanupRuntime,
+      cloudCredentials: cloudCredentials
     )
     modelDownloads = ModelDownloadManager(settings: settings, coordinator: coordinator)
     cleanupModelDownloads = CleanupModelDownloadManager(

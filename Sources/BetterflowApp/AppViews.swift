@@ -14,7 +14,10 @@ struct MenuContentView: View {
       VStack(alignment: .leading, spacing: 3) {
         Text(coordinator.state.label)
           .font(.headline)
-        Text(model.settings.selectedModel.displayName)
+        Text(
+          coordinator.recognitionEngine.isEmpty
+            ? model.settings.selectedModel.displayName : coordinator.recognitionEngine
+        )
           .font(.caption)
           .foregroundStyle(.secondary)
         Label(microphoneName, systemImage: "mic")
@@ -105,6 +108,11 @@ struct SettingsView: View {
         cleanupDownloads: model.cleanupModelDownloads
       )
       .tabItem { Label("Models", systemImage: "waveform.badge.magnifyingglass") }
+      CloudSettingsView(
+        settings: model.settings,
+        credentials: model.cloudCredentials
+      )
+      .tabItem { Label("Cloud", systemImage: "cloud") }
       VocabularySettingsView(model: model, settings: model.settings)
         .tabItem { Label("Vocabulary", systemImage: "text.book.closed") }
       HistorySettingsView(model: model, history: model.history)
@@ -298,38 +306,25 @@ private struct ModelSettingsView: View {
   var body: some View {
     Form {
       Section("Recognition Engine") {
-        ForEach(BenchmarkModel.allCases, id: \.self) { candidate in
-          ModelDownloadRow(
-            model: candidate,
-            selected: settings.selectedModel == candidate,
-            state: downloads.states[candidate] ?? .checking,
-            select: { downloads.select(candidate) },
-            download: { downloads.download(candidate) },
-            delete: { deleteCandidate = candidate }
-          )
+        LazyVGrid(
+          columns: [GridItem(.adaptive(minimum: 270), alignment: .top)],
+          alignment: .leading,
+          spacing: 12
+        ) {
+          ForEach(BenchmarkModel.allCases, id: \.self) { candidate in
+            ModelDownloadCard(
+              model: candidate,
+              selected: settings.selectedModel == candidate,
+              state: downloads.states[candidate] ?? .checking,
+              select: { downloads.select(candidate) },
+              download: { downloads.download(candidate) },
+              delete: { deleteCandidate = candidate }
+            )
+          }
         }
-      }
-
-      Section("Selected Model") {
-        let selected = settings.selectedModel
-        CapabilityRow(
-          label: "Self-correction",
-          supported: selected.supportsRevisions
-        )
-        CapabilityRow(
-          label: "Guide words",
-          supported: selected.supportsGuidance
-        )
-        LabeledContent("Requirements", value: selected.requirements)
-
-        if !selected.supportsRevisions {
-          Label(
-            "This model cannot revise earlier text while you speak.",
-            systemImage: "exclamationmark.triangle.fill"
-          )
-          .foregroundStyle(.orange)
-          .font(.callout)
-        }
+        Text("Speed and accuracy are relative estimates on Apple silicon; actual performance varies by Mac and speaking style.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
 
       Section("Transcript Cleanup") {
@@ -464,7 +459,7 @@ private struct CleanupModelDownloadRow: View {
   }
 }
 
-private struct ModelDownloadRow: View {
+private struct ModelDownloadCard: View {
   let model: BenchmarkModel
   let selected: Bool
   let state: ModelDownloadState
@@ -473,43 +468,74 @@ private struct ModelDownloadRow: View {
   let delete: () -> Void
 
   var body: some View {
-    HStack(spacing: 12) {
-      Button(action: select) {
-        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-          .foregroundStyle(selected ? Color.accentColor : .secondary)
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel(selected ? "Selected" : "Select \(model.displayName)")
-
-      Button(action: select) {
-        VStack(alignment: .leading, spacing: 3) {
-          Text(model.displayName)
-            .foregroundStyle(.primary)
-          Text(model.summary)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-          Text(statusText)
-            .font(.caption2)
-            .foregroundStyle(statusIsError ? .red : .secondary)
-            .lineLimit(2)
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .top, spacing: 8) {
+        Button(action: select) {
+          Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+            .font(.title3)
+            .foregroundStyle(selected ? Color.accentColor : Color.secondary)
         }
-      }
-      .buttonStyle(.plain)
+        .buttonStyle(.plain)
+        .accessibilityLabel(selected ? "Selected" : "Select \(model.displayName)")
 
-      Spacer()
+        Button(action: select) {
+          Text(model.displayName)
+            .font(.headline)
+            .foregroundStyle(.primary)
+        }
+        .buttonStyle(.plain)
 
-      switch state {
-      case .checking, .downloading, .deleting:
-        ProgressView()
-          .controlSize(.small)
-      case .notDownloaded, .failed:
-        Button("Download", action: download)
-      case .downloaded:
-        Button("Delete", role: .destructive, action: delete)
-      case .unavailable:
-        EmptyView()
+        Spacer(minLength: 4)
+        downloadControl
       }
+
+      Text(model.summary)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      HStack(spacing: 18) {
+        ModelRatingView(title: "Speed", rating: model.presentation.speed)
+        ModelRatingView(title: "Accuracy", rating: model.presentation.accuracy)
+        ModelSizeView(label: model.presentation.size)
+      }
+
+      HStack(spacing: 6) {
+        ModelFeatureBadge(label: "Revisions", supported: model.supportsRevisions)
+        ModelFeatureBadge(label: "Guide words", supported: model.supportsGuidance)
+      }
+
+      Text(statusText)
+        .font(.caption2)
+        .foregroundStyle(statusIsError ? Color.red : Color.secondary)
+        .lineLimit(2)
+    }
+    .frame(maxWidth: .infinity, minHeight: 154, alignment: .topLeading)
+    .padding(12)
+    .background(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(selected ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.035))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(
+          selected ? Color.accentColor : Color.primary.opacity(0.10),
+          lineWidth: selected ? 1.5 : 1
+        )
+    )
+  }
+
+  @ViewBuilder
+  private var downloadControl: some View {
+    switch state {
+    case .checking, .downloading, .deleting:
+      ProgressView().controlSize(.small)
+    case .notDownloaded, .failed:
+      Button("Download", action: download).controlSize(.small)
+    case .downloaded:
+      Button("Delete", role: .destructive, action: delete).controlSize(.small)
+    case .unavailable:
+      EmptyView()
     }
   }
 
@@ -534,17 +560,343 @@ private struct ModelDownloadRow: View {
   }
 }
 
-private struct CapabilityRow: View {
+private struct CloudProviderCard: View {
+  let provider: CloudTranscriptionProvider
+  let selected: Bool
+  let configured: Bool
+  let select: () -> Void
+
+  var body: some View {
+    Button(action: select) {
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(alignment: .top, spacing: 8) {
+          Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+            .font(.title3)
+            .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+          Text(provider.displayName)
+            .font(.headline)
+            .foregroundStyle(.primary)
+          Spacer(minLength: 4)
+          if configured {
+            Label("Key saved", systemImage: "key.fill")
+              .font(.caption2)
+              .foregroundStyle(.green)
+          }
+        }
+
+        Text(provider.summary)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+
+        HStack(spacing: 18) {
+          ModelRatingView(title: "Speed", rating: provider.presentation.speed)
+          ModelRatingView(title: "Accuracy", rating: provider.presentation.accuracy)
+          ModelSizeView(label: provider.presentation.size)
+        }
+
+        HStack(spacing: 6) {
+          ModelFeatureBadge(label: "Revisions", supported: true)
+          ModelFeatureBadge(label: "Guide words", supported: true)
+        }
+
+        Text(configured ? "Ready to use · No local download" : "API key required · No local download")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, minHeight: 154, alignment: .topLeading)
+      .padding(12)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(selected ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.035))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(
+            selected ? Color.accentColor : Color.primary.opacity(0.10),
+            lineWidth: selected ? 1.5 : 1
+          )
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(selected ? "Selected \(provider.displayName)" : "Select \(provider.displayName)")
+  }
+}
+
+private struct ModelRatingView: View {
+  let title: String
+  let rating: ModelRating
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Text(title.uppercased())
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(.tertiary)
+      HStack(spacing: 2) {
+        ForEach(1...4, id: \.self) { level in
+          Capsule()
+            .fill(level <= rating.score ? Color.accentColor : Color.secondary.opacity(0.18))
+            .frame(width: 9, height: 4)
+        }
+      }
+      Text(rating.label)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+  }
+}
+
+private struct ModelSizeView: View {
+  let label: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Text("MODEL SIZE")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(.tertiary)
+      Text(label)
+        .font(.caption)
+        .foregroundStyle(.primary)
+      Text(detail)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private var detail: String {
+    switch label {
+    case "Cloud": "No download"
+    case "System": "Managed by macOS"
+    default: "Parameters"
+    }
+  }
+}
+
+private struct ModelFeatureBadge: View {
   let label: String
   let supported: Bool
 
   var body: some View {
-    LabeledContent(label) {
-      HStack {
-        Image(systemName: supported ? "checkmark.circle.fill" : "xmark.circle.fill")
-          .foregroundStyle(supported ? .green : .secondary)
-        Text(supported ? "Supported" : "Not supported")
+    Label(label, systemImage: supported ? "checkmark" : "xmark")
+      .font(.caption2.weight(.medium))
+      .foregroundStyle(supported ? Color.primary : Color.secondary)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 4)
+      .background(
+        Capsule().fill(supported ? Color.green.opacity(0.12) : Color.secondary.opacity(0.10))
+      )
+  }
+}
+
+private struct ModelRating {
+  let label: String
+  let score: Int
+
+  static let moderate = ModelRating(label: "Moderate", score: 2)
+  static let fast = ModelRating(label: "Fast", score: 3)
+  static let veryFast = ModelRating(label: "Very fast", score: 4)
+  static let good = ModelRating(label: "Good", score: 2)
+  static let high = ModelRating(label: "High", score: 3)
+  static let excellent = ModelRating(label: "Excellent", score: 4)
+}
+
+private struct ModelPresentation {
+  let speed: ModelRating
+  let accuracy: ModelRating
+  let size: String
+}
+
+private extension BenchmarkModel {
+  var presentation: ModelPresentation {
+    switch self {
+    case .parakeet:
+      ModelPresentation(speed: .veryFast, accuracy: .high, size: "110M")
+    case .moonshineSmall:
+      ModelPresentation(speed: .veryFast, accuracy: .good, size: "123M")
+    case .moonshineMedium:
+      ModelPresentation(speed: .fast, accuracy: .high, size: "245M")
+    case .whisper:
+      ModelPresentation(speed: .moderate, accuracy: .excellent, size: "≈809M")
+    case .appleSpeech:
+      ModelPresentation(speed: .fast, accuracy: .high, size: "System")
+    case .appleDictation:
+      ModelPresentation(speed: .fast, accuracy: .good, size: "System")
+    case .parakeetEou:
+      ModelPresentation(speed: .veryFast, accuracy: .high, size: "120M")
+    case .nemotron:
+      ModelPresentation(speed: .fast, accuracy: .high, size: "0.6B")
+    case .qwen:
+      ModelPresentation(speed: .moderate, accuracy: .excellent, size: "0.6B")
+    }
+  }
+}
+
+private extension CloudTranscriptionProvider {
+  var presentation: ModelPresentation {
+    switch self {
+    case .deepgram:
+      ModelPresentation(speed: .veryFast, accuracy: .high, size: "Cloud")
+    case .elevenLabs, .openAI:
+      ModelPresentation(speed: .veryFast, accuracy: .excellent, size: "Cloud")
+    }
+  }
+}
+
+private struct CloudSettingsView: View {
+  @ObservedObject var settings: AppSettings
+  @ObservedObject var credentials: CloudCredentials
+  @State private var apiKey = ""
+  @State private var keyError: String?
+
+  var body: some View {
+    Form {
+      Section("Transcription Location") {
+        Picker("Mode", selection: $settings.transcriptionMode) {
+          ForEach(TranscriptionMode.allCases) { mode in
+            Text(mode.displayName).tag(mode)
+          }
+        }
+        .pickerStyle(.segmented)
+        Text(settings.transcriptionMode.detail)
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
+
+      Section("Cloud Service") {
+        LazyVGrid(
+          columns: [GridItem(.adaptive(minimum: 270), alignment: .top)],
+          alignment: .leading,
+          spacing: 12
+        ) {
+          ForEach(CloudTranscriptionProvider.allCases) { provider in
+            CloudProviderCard(
+              provider: provider,
+              selected: settings.cloudProvider == provider,
+              configured: credentials.configuredProviders.contains(provider),
+              select: { settings.cloudProvider = provider }
+            )
+          }
+        }
+        Text("Speed and accuracy are qualitative estimates for live English dictation; network conditions still matter.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+
+        Picker("Guide word strength", selection: strengthBinding) {
+          ForEach(GuideWordStrength.allCases) { strength in
+            Text(strength.displayName).tag(strength)
+          }
+        }
+        .pickerStyle(.segmented)
+      }
+
+      Section("API Key") {
+        SecureField(
+          hasSavedKey ? "Saved in Keychain" : "Paste API key",
+          text: $apiKey
+        )
+        .textContentType(.password)
+
+        HStack {
+          Button("Save") { saveKey() }
+            .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          Button("Test") { credentials.test(settings.cloudProvider) }
+            .disabled(!hasSavedKey || isTesting)
+          if hasSavedKey {
+            Button("Remove", role: .destructive) { removeKey() }
+          }
+          Spacer()
+          Link("Get API Key", destination: settings.cloudProvider.keyURL)
+          Link("Billing", destination: settings.cloudProvider.billingURL)
+        }
+
+        if let message = statusMessage {
+          Label(message, systemImage: statusIcon)
+            .font(.caption)
+            .foregroundStyle(statusColor)
+        } else {
+          Text("Keys are stored only in macOS Keychain.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+
+      if settings.transcriptionMode == .automatic {
+        Section {
+          Label(
+            "If the service is unreachable, Betterflow continues with \(settings.selectedModel.displayName) using the audio already captured.",
+            systemImage: "arrow.triangle.branch"
+          )
+          .font(.callout)
+        }
+      }
+    }
+    .formStyle(.grouped)
+    .onChange(of: settings.cloudProvider) {
+      apiKey = ""
+      keyError = nil
+    }
+  }
+
+  private var hasSavedKey: Bool {
+    credentials.configuredProviders.contains(settings.cloudProvider)
+  }
+
+  private var validation: CloudCredentialValidation {
+    credentials.validation[settings.cloudProvider] ?? .idle
+  }
+
+  private var isTesting: Bool {
+    validation == .testing
+  }
+
+  private var statusMessage: String? {
+    keyError ?? validation.label ?? (hasSavedKey ? "Saved in Keychain" : nil)
+  }
+
+  private var statusIcon: String {
+    if keyError != nil { return "exclamationmark.circle.fill" }
+    return switch validation {
+    case .valid: "checkmark.circle.fill"
+    case .invalid: "exclamationmark.circle.fill"
+    case .testing: "hourglass"
+    case .idle: "key.fill"
+    }
+  }
+
+  private var statusColor: Color {
+    if keyError != nil { return .red }
+    return switch validation {
+    case .valid: .green
+    case .invalid: .red
+    case .testing, .idle: .secondary
+    }
+  }
+
+  private var strengthBinding: Binding<GuideWordStrength> {
+    Binding(
+      get: { settings.guideWordStrength(for: settings.cloudProvider) },
+      set: { settings.setGuideWordStrength($0, for: settings.cloudProvider) }
+    )
+  }
+
+  private func saveKey() {
+    do {
+      try credentials.save(apiKey, for: settings.cloudProvider)
+      apiKey = ""
+      keyError = nil
+      credentials.test(settings.cloudProvider)
+    } catch {
+      keyError = error.localizedDescription
+    }
+  }
+
+  private func removeKey() {
+    do {
+      try credentials.remove(settings.cloudProvider)
+      apiKey = ""
+      keyError = nil
+    } catch {
+      keyError = error.localizedDescription
     }
   }
 }

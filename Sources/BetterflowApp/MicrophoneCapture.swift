@@ -144,6 +144,14 @@ final class MicrophoneCapture: @unchecked Sendable {
     lock.withLock { samples }
   }
 
+  func samples(from start: Int, through end: Int) -> [Float] {
+    lock.withLock {
+      let lowerBound = max(0, min(start, samples.count))
+      let upperBound = max(lowerBound, min(end, samples.count))
+      return Array(samples[lowerBound..<upperBound])
+    }
+  }
+
   func level() -> Double {
     lock.withLock { latestLevel }
   }

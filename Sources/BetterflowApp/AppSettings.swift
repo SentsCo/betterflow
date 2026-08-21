@@ -70,6 +70,8 @@ final class AppSettings: ObservableObject {
     static let cleanupModel = "cleanupModel"
     static let cleanupEnabledByDefault = "cleanupEnabledByDefault"
     static let screenshotShortcut = "screenshotShortcut"
+    static let transcriptionMode = "transcriptionMode"
+    static let cloudProvider = "cloudTranscriptionProvider"
   }
 
   private let defaults: UserDefaults
@@ -122,6 +124,14 @@ final class AppSettings: ObservableObject {
     }
   }
 
+  @Published var transcriptionMode: TranscriptionMode {
+    didSet { defaults.set(transcriptionMode.rawValue, forKey: Key.transcriptionMode) }
+  }
+
+  @Published var cloudProvider: CloudTranscriptionProvider {
+    didSet { defaults.set(cloudProvider.rawValue, forKey: Key.cloudProvider) }
+  }
+
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     selectedModel =
@@ -150,6 +160,12 @@ final class AppSettings: ObservableObject {
       defaults.data(forKey: Key.screenshotShortcut)
       .flatMap { try? JSONDecoder().decode(ScreenshotShortcut.self, from: $0) }
       ?? .standard
+    transcriptionMode =
+      defaults.string(forKey: Key.transcriptionMode)
+      .flatMap(TranscriptionMode.init(rawValue:)) ?? .localOnly
+    cloudProvider =
+      defaults.string(forKey: Key.cloudProvider)
+      .flatMap(CloudTranscriptionProvider.init(rawValue:)) ?? .deepgram
   }
 
   func addGuideWord() {
@@ -173,6 +189,18 @@ final class AppSettings: ObservableObject {
 
   func setGuideWordStrength(_ strength: GuideWordStrength, for model: BenchmarkModel) {
     guideWordStrengths[model.rawValue] = strength.rawValue
+  }
+
+  func guideWordStrength(for provider: CloudTranscriptionProvider) -> GuideWordStrength {
+    guideWordStrengths["cloud.\(provider.rawValue)"]
+      .flatMap(GuideWordStrength.init(rawValue:)) ?? .normal
+  }
+
+  func setGuideWordStrength(
+    _ strength: GuideWordStrength,
+    for provider: CloudTranscriptionProvider
+  ) {
+    guideWordStrengths["cloud.\(provider.rawValue)"] = strength.rawValue
   }
 
   func rememberMicrophones(_ devices: [AudioInputDevice]) {

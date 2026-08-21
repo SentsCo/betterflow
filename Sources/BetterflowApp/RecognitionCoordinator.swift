@@ -2,10 +2,16 @@ import BetterflowBenchmarkCore
 import BetterflowEngine
 import Combine
 import Foundation
+import OSLog
+
+private let recognitionLogger = Logger(
+  subsystem: "com.zachsents.betterflow",
+  category: "Recognition"
+)
 
 struct LiveInferenceGate {
-  static let minimumAudioSeconds = 0.25
-  static let inferenceHeadroom = 1.1
+  static let minimumAudioSeconds = 0.3
+  static let inferenceHeadroom = 2.0
 
   private let sampleRate: Double
   private(set) var lastProcessedSampleCount = 0
@@ -180,6 +186,7 @@ final class RecognitionCoordinator: ObservableObject {
   @Published private(set) var transcript = ""
   @Published private(set) var selectedMicrophone = "System Default"
   @Published private(set) var cleanupEnabled = false
+  @Published private(set) var recognitionEngine = ""
 
   let audioMeter = AudioMeterState()
 
@@ -190,6 +197,7 @@ final class RecognitionCoordinator: ObservableObject {
   private let history: TranscriptionHistory
   private let sounds: AppSoundPlayer
   private let cleanupRuntime: TranscriptCleanupRuntime
+  private let cloudCredentials: CloudCredentials
   private let capture: MicrophoneCapture
   private let captureLifecycle: MicrophoneCaptureLifecycle
   private let runtime = RecognitionRuntime()
@@ -197,12 +205,20 @@ final class RecognitionCoordinator: ObservableObject {
   private var insertionTargetTask: Task<Void, Never>?
   private var startupTask: Task<Void, Never>?
   private var liveTask: Task<Void, Never>?
+  private var cloudUpdatesTask: Task<Void, Never>?
   private var audioMeterTask: Task<Void, Never>?
   private var finalizationTask: Task<Void, Never>?
   private var runtimeCancellationTask: Task<Void, Never>?
   private var currentSession = UUID()
   private var insertionTarget: TextInsertionTarget?
   private var cleanupModelForSession = CleanupModel.appleFoundation
+  private var localModelForSession = BenchmarkModel.moonshineSmall
+  private var guideWordsForSession: [String] = []
+  private var localGuideWordStrengthForSession = GuideWordStrength.normal
+  private var transcriptionModeForSession = TranscriptionMode.localOnly
+  private var cloudProviderForSession = CloudTranscriptionProvider.deepgram
+  private var cloudGuideWordStrengthForSession = GuideWordStrength.normal
+  private var cloudSession: CloudTranscriptionSession?
   private var returnAfterInsertion = false
   private var dictationActive = false
   private var recording = false
@@ -211,13 +227,15 @@ final class RecognitionCoordinator: ObservableObject {
     settings: AppSettings,
     history: TranscriptionHistory,
     sounds: AppSoundPlayer,
-    cleanupRuntime: TranscriptCleanupRuntime
+    cleanupRuntime: TranscriptCleanupRuntime,
+    cloudCredentials: CloudCredentials
   ) {
     let capture = MicrophoneCapture()
     self.settings = settings
     self.history = history
     self.sounds = sounds
     self.cleanupRuntime = cleanupRuntime
+    self.cloudCredentials = cloudCredentials
     self.capture = capture
     captureLifecycle = MicrophoneCaptureLifecycle(capture: capture)
   }
@@ -285,6 +303,7 @@ final class RecognitionCoordinator: ObservableObject {
     onKeyboardModeChange?(.recording)
     let session = UUID()
     currentSession = session
+    recognitionLogger.info("Dictation started session=\(session.uuidString, privacy: .public)")
     insertionTargetTask?.cancel()
     insertionTargetTask = nil
     insertionTarget = TextInserter.captureTarget(context: "recording-start")
@@ -305,6 +324,13 @@ final class RecognitionCoordinator: ObservableObject {
     }
     cleanupEnabled = settings.cleanupEnabledByDefault
     cleanupModelForSession = settings.cleanupModel
+    localModelForSession = settings.selectedModel
+    guideWordsForSession = settings.cleanGuideWords()
+    localGuideWordStrengthForSession = settings.guideWordStrength(for: settings.selectedModel)
+    transcriptionModeForSession = settings.transcriptionMode
+    cloudProviderForSession = settings.cloudProvider
+    cloudGuideWordStrengthForSession = settings.guideWordStrength(for: settings.cloudProvider)
+    recognitionEngine = settings.selectedModel.displayName
     returnAfterInsertion = false
     transcript = ""
     audioMeter.reset()
@@ -317,6 +343,7 @@ final class RecognitionCoordinator: ObservableObject {
   }
 
   func finishDictation() {
+    let finishRequested = ContinuousClock.now
     dictationActive = false
     guard recording else {
       startupTask?.cancel()
@@ -346,8 +373,14 @@ final class RecognitionCoordinator: ObservableObject {
     let captureLifecycle = captureLifecycle
     finalizationTask = Task { [weak self] in
       let samples = await captureLifecycle.stop()
+      recognitionLogger.info(
+        "Capture stopped samples=\(samples.count) elapsedMs=\(finishRequested.duration(to: .now).milliseconds)"
+      )
       await pendingStartup?.value
       await pendingLiveUpdate?.value
+      recognitionLogger.info(
+        "Live inference drained elapsedMs=\(finishRequested.duration(to: .now).milliseconds)"
+      )
       guard !Task.isCancelled else { return }
       await self?.finalize(samples: samples, session: session)
     }
@@ -412,6 +445,10 @@ final class RecognitionCoordinator: ObservableObject {
     let pendingLiveUpdate = liveTask
     liveTask?.cancel()
     liveTask = nil
+    cloudUpdatesTask?.cancel()
+    cloudUpdatesTask = nil
+    let pendingCloud = cloudSession
+    cloudSession = nil
     audioMeterTask?.cancel()
     finalizationTask?.cancel()
     finalizationTask = nil
@@ -424,6 +461,7 @@ final class RecognitionCoordinator: ObservableObject {
       _ = await captureLifecycle.stop()
       await pendingStartup?.value
       await pendingLiveUpdate?.value
+      await pendingCloud?.cancel()
       await runtime.close()
     }
   }
@@ -436,8 +474,15 @@ final class RecognitionCoordinator: ObservableObject {
   private func beginCapture(session: UUID) async {
     await runtimeCancellationTask?.value
     guard dictationActive, currentSession == session else { return }
-    let model = settings.selectedModel
-    guard await ModelStorage.isDownloaded(model) else {
+    let model = localModelForSession
+    let provider = cloudProviderForSession
+    let cloudKey = cloudCredentials.key(for: provider)
+    let useCloud = transcriptionModeForSession != .localOnly && cloudKey != nil
+    if transcriptionModeForSession == .cloudOnly, cloudKey == nil {
+      fail("Add a \(provider.displayName) API key in Settings.", session: session)
+      return
+    }
+    if !useCloud, !(await ModelStorage.isDownloaded(model)) {
       fail("Download \(model.displayName) in Settings before using it.", session: session)
       return
     }
@@ -457,42 +502,183 @@ final class RecognitionCoordinator: ObservableObject {
       recording = true
       state = .listening
       startAudioMeter(session: session)
-      let guideWords = settings.cleanGuideWords()
-      try await runtime.startLive(
-        model: model,
-        guideWords: guideWords,
-        guideWordStrength: settings.guideWordStrength(for: model)
-      )
-      guard recording, currentSession == session else { return }
-      liveTask = Task.detached(priority: .utility) { [weak self] in
-        var inferenceGate = LiveInferenceGate(sampleRate: MicrophoneCapture.sampleRate)
-        for await sampleCount in audioUpdates {
-          guard !Task.isCancelled else { return }
-          guard inferenceGate.shouldRun(at: sampleCount) else { continue }
-          guard let self else { return }
-          let inferenceStarted = ContinuousClock.now
-          guard let processedSampleCount = await self.refreshLiveTranscript(session: session)
-          else {
-            return
-          }
-          inferenceGate.didFinishInference(
-            processedSampleCount: processedSampleCount,
-            durationSeconds: inferenceStarted.duration(to: .now).milliseconds / 1_000
+      if useCloud, let cloudKey {
+        do {
+          try await startCloudTranscription(
+            provider: provider,
+            apiKey: cloudKey,
+            audioUpdates: audioUpdates,
+            session: session
           )
+        } catch {
+          if transcriptionModeForSession == .automatic {
+            recognitionLogger.notice(
+              "Cloud startup failed provider=\(provider.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public); using local fallback"
+            )
+            try await startLocalTranscription(audioUpdates: audioUpdates, session: session)
+          } else {
+            throw error
+          }
         }
+      } else {
+        try await startLocalTranscription(audioUpdates: audioUpdates, session: session)
       }
     } catch {
       fail(error.localizedDescription, session: session)
     }
   }
 
-  private func refreshLiveTranscript(session: UUID) async -> Int? {
+  private func startCloudTranscription(
+    provider: CloudTranscriptionProvider,
+    apiKey: String,
+    audioUpdates: AsyncStream<Int>,
+    session: UUID
+  ) async throws {
+    let cloud = try await CloudTranscriptionSession.connect(
+      provider: provider,
+      apiKey: apiKey,
+      guideWords: guideWordsForSession,
+      guideWordStrength: cloudGuideWordStrengthForSession
+    )
+    guard currentSession == session else {
+      await cloud.cancel()
+      return
+    }
+    cloudSession = cloud
+    recognitionEngine = provider.displayName
+    cloudUpdatesTask?.cancel()
+    cloudUpdatesTask = Task { [weak self] in
+      do {
+        for try await update in cloud.updates {
+          guard !Task.isCancelled, let self,
+            self.currentSession == session,
+            self.cloudSession === cloud
+          else { return }
+          self.transcript = update
+        }
+      } catch {
+        recognitionLogger.notice(
+          "Cloud update stream failed provider=\(provider.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+        )
+      }
+    }
+    if recording {
+      startAudioLoop(audioUpdates: audioUpdates, cloud: cloud, session: session)
+    }
+  }
+
+  private func startLocalTranscription(
+    audioUpdates: AsyncStream<Int>,
+    session: UUID
+  ) async throws {
+    let model = localModelForSession
+    guard await ModelStorage.isDownloaded(model) else {
+      throw RecognitionError.localFallbackUnavailable(model.displayName)
+    }
+    try await runtime.startLive(
+      model: model,
+      guideWords: guideWordsForSession,
+      guideWordStrength: localGuideWordStrengthForSession
+    )
+    guard recording, currentSession == session else { return }
+    recognitionEngine = model.displayName
+    startAudioLoop(audioUpdates: audioUpdates, cloud: nil, session: session)
+  }
+
+  private func startAudioLoop(
+    audioUpdates: AsyncStream<Int>,
+    cloud initialCloud: CloudTranscriptionSession?,
+    session: UUID
+  ) {
+    let capture = capture
+    liveTask = Task.detached(priority: .utility) { [weak self] in
+      var cloud = initialCloud
+      var sentSampleCount = 0
+      var inferenceGate = LiveInferenceGate(sampleRate: MicrophoneCapture.sampleRate)
+      for await sampleCount in audioUpdates {
+        guard !Task.isCancelled, let self else { return }
+        if let activeCloud = cloud {
+          do {
+            // Network providers consume each capture buffer as it arrives. The adaptive
+            // inference gate below exists only for expensive local decoding passes.
+            let samples = capture.samples(from: sentSampleCount, through: sampleCount)
+            try await activeCloud.append(samples: samples)
+            sentSampleCount = sampleCount
+            continue
+          } catch {
+            guard await self.activateLocalFallback(
+              from: activeCloud,
+              error: error,
+              session: session
+            ) else { return }
+            cloud = nil
+          }
+        }
+
+        guard inferenceGate.shouldRun(at: sampleCount) else { continue }
+        let samples = capture.snapshot()
+        guard !samples.isEmpty else { continue }
+        let inferenceStarted = ContinuousClock.now
+        guard
+          let processedSampleCount = await self.refreshLiveTranscript(
+            samples: samples,
+            session: session
+          )
+        else { return }
+        let inferenceSeconds = inferenceStarted.duration(to: .now).milliseconds / 1_000
+        if inferenceSeconds >= 0.5 {
+          recognitionLogger.notice(
+            "Slow live inference audioSeconds=\(Double(processedSampleCount) / MicrophoneCapture.sampleRate) inferenceSeconds=\(inferenceSeconds)"
+          )
+        }
+        inferenceGate.didFinishInference(
+          processedSampleCount: processedSampleCount,
+          durationSeconds: inferenceSeconds
+        )
+      }
+    }
+  }
+
+  private func activateLocalFallback(
+    from cloud: CloudTranscriptionSession,
+    error: Error,
+    session: UUID
+  ) async -> Bool {
+    guard recording, currentSession == session, cloudSession === cloud else { return false }
+    if transcriptionModeForSession == .cloudOnly {
+      fail(error.localizedDescription, session: session)
+      return false
+    }
+    cloudSession = nil
+    cloudUpdatesTask?.cancel()
+    cloudUpdatesTask = nil
+    await cloud.cancel()
+    do {
+      let model = localModelForSession
+      guard await ModelStorage.isDownloaded(model) else {
+        throw RecognitionError.localFallbackUnavailable(model.displayName)
+      }
+      try await runtime.startLive(
+        model: model,
+        guideWords: guideWordsForSession,
+        guideWordStrength: localGuideWordStrengthForSession
+      )
+      recognitionEngine = model.displayName
+      recognitionLogger.notice(
+        "Cloud transcription failed; local fallback activated provider=\(self.cloudProviderForSession.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+      )
+      return recording && currentSession == session
+    } catch {
+      fail(error.localizedDescription, session: session)
+      return false
+    }
+  }
+
+  private func refreshLiveTranscript(samples: [Float], session: UUID) async -> Int? {
     guard recording, currentSession == session else { return nil }
-    let samples = capture.snapshot()
-    guard !samples.isEmpty else { return nil }
-    let model = settings.selectedModel
-    let guideWords = settings.cleanGuideWords()
-    let guideWordStrength = settings.guideWordStrength(for: model)
+    let model = localModelForSession
+    let guideWords = guideWordsForSession
+    let guideWordStrength = localGuideWordStrengthForSession
     do {
       if let event = try await runtime.updateLive(samples: samples, final: false) {
         guard recording, currentSession == session else { return nil }
@@ -526,30 +712,30 @@ final class RecognitionCoordinator: ObservableObject {
       finishWithoutText(session: session)
       return
     }
-    let model = settings.selectedModel
-    let guideWords = settings.cleanGuideWords()
-    let guideWordStrength = settings.guideWordStrength(for: model)
+    let model = localModelForSession
+    let recognitionStarted = ContinuousClock.now
     do {
       let final: String
-      if let event = try await runtime.updateLive(samples: samples, final: true) {
-        final = event.text
-        transcript = event.text
-      } else {
-        let publishesIntermediateResults = model.publishesIntermediateBatchResults
-        final = try await runtime.transcribe(
-          samples: samples,
-          model: model,
-          guideWords: guideWords,
-          guideWordStrength: guideWordStrength
-        ) { [weak self] event in
-          guard publishesIntermediateResults else { return }
-          Task { @MainActor in
-            guard let self, self.currentSession == session else { return }
-            self.transcript = event.text
-          }
+      if let cloud = cloudSession {
+        do {
+          final = try await cloud.finish(completeAudio: samples)
+          transcript = final
+          await stopCloudSession(cloud)
+        } catch {
+          await stopCloudSession(cloud)
+          guard transcriptionModeForSession == .automatic else { throw error }
+          recognitionLogger.notice(
+            "Cloud finalization failed provider=\(self.cloudProviderForSession.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public); retrying locally"
+          )
+          final = try await transcribeLocally(samples: samples, session: session)
+          recognitionEngine = model.displayName
         }
-        transcript = final
+      } else {
+        final = try await transcribeLocally(samples: samples, session: session)
       }
+      recognitionLogger.info(
+        "Final recognition completed engine=\(self.recognitionEngine, privacy: .public) audioSeconds=\(Double(samples.count) / MicrophoneCapture.sampleRate) elapsedMs=\(recognitionStarted.duration(to: .now).milliseconds)"
+      )
       guard !final.isEmpty else { throw RecognitionError.noSpeech }
       guard !Task.isCancelled, currentSession == session else { return }
       let rawTranscript = final
@@ -557,6 +743,7 @@ final class RecognitionCoordinator: ObservableObject {
       let deliveredTranscript: String
       let appliedCleanup: Bool
       if shouldCleanup {
+        let cleanupStarted = ContinuousClock.now
         let outcome = await cleanupRuntime.cleanup(
           rawTranscript,
           using: cleanupModelForSession
@@ -569,6 +756,9 @@ final class RecognitionCoordinator: ObservableObject {
           deliveredTranscript = rawTranscript
           appliedCleanup = false
         }
+        recognitionLogger.info(
+          "Transcript cleanup completed model=\(self.cleanupModelForSession.rawValue, privacy: .public) elapsedMs=\(cleanupStarted.duration(to: .now).milliseconds)"
+        )
       } else {
         deliveredTranscript = rawTranscript
         appliedCleanup = false
@@ -592,6 +782,9 @@ final class RecognitionCoordinator: ObservableObject {
       state = .idle
       onKeyboardModeChange?(.none)
       sounds.play(delivery == .inserted ? .textInserted : .insertionFallback)
+      recognitionLogger.info(
+        "Dictation delivered result=\(String(describing: delivery), privacy: .public)"
+      )
     } catch RecognitionError.noSpeech {
       guard !Task.isCancelled else { return }
       finishWithoutText(session: session)
@@ -599,6 +792,39 @@ final class RecognitionCoordinator: ObservableObject {
       guard !Task.isCancelled else { return }
       fail(error.localizedDescription, session: session)
     }
+  }
+
+  private func transcribeLocally(samples: [Float], session: UUID) async throws -> String {
+    let model = localModelForSession
+    guard await ModelStorage.isDownloaded(model) else {
+      throw RecognitionError.localFallbackUnavailable(model.displayName)
+    }
+    if let event = try await runtime.updateLive(samples: samples, final: true) {
+      transcript = event.text
+      return event.text
+    }
+    let publishesIntermediateResults = model.publishesIntermediateBatchResults
+    let final = try await runtime.transcribe(
+      samples: samples,
+      model: model,
+      guideWords: guideWordsForSession,
+      guideWordStrength: localGuideWordStrengthForSession
+    ) { [weak self] event in
+      guard publishesIntermediateResults else { return }
+      Task { @MainActor in
+        guard let self, self.currentSession == session else { return }
+        self.transcript = event.text
+      }
+    }
+    transcript = final
+    return final
+  }
+
+  private func stopCloudSession(_ cloud: CloudTranscriptionSession) async {
+    if cloudSession === cloud { cloudSession = nil }
+    cloudUpdatesTask?.cancel()
+    cloudUpdatesTask = nil
+    await cloud.cancel()
   }
 
   private func startAudioMeter(session: UUID) {
@@ -644,10 +870,15 @@ final class RecognitionCoordinator: ObservableObject {
   private func beginBackgroundCleanup() {
     let captureLifecycle = captureLifecycle
     let runtime = runtime
+    let cloud = cloudSession
+    cloudSession = nil
+    cloudUpdatesTask?.cancel()
+    cloudUpdatesTask = nil
     let pendingCleanup = runtimeCancellationTask
     runtimeCancellationTask = Task.detached(priority: .utility) {
       await pendingCleanup?.value
       _ = await captureLifecycle.stop()
+      await cloud?.cancel()
       await runtime.cancelLive()
     }
   }
@@ -684,6 +915,7 @@ final class RecognitionCoordinator: ObservableObject {
     state = .idle
     onOverlayVisibility?(false)
     onKeyboardModeChange?(.none)
+    beginBackgroundCleanup()
   }
 }
 
@@ -716,6 +948,7 @@ enum RecognitionError: LocalizedError {
   case modelInUse
   case noSpeech
   case invalidAudioStream
+  case localFallbackUnavailable(String)
 
   var errorDescription: String? {
     switch self {
@@ -723,6 +956,8 @@ enum RecognitionError: LocalizedError {
     case .modelInUse: "Stop dictation before deleting this model."
     case .noSpeech: "The model did not detect speech."
     case .invalidAudioStream: "The live audio stream became inconsistent."
+    case .localFallbackUnavailable(let model):
+      "Download \(model) to use local transcription or automatic fallback."
     }
   }
 }
