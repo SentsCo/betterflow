@@ -96,6 +96,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          cp \
+            dist/release/Betterflow-"$BETTERFLOW_VERSION"-macOS.dmg \
+            dist/release/Betterflow-macOS.dmg
           release_flags=(--generate-notes --title "Betterflow $BETTERFLOW_VERSION")
           if [[ "$BETTERFLOW_VERSION" == *-* ]]; then
             release_flags+=(--prerelease)
@@ -105,6 +108,7 @@ jobs:
           gh release create "$BETTERFLOW_TAG" \
             dist/release/Betterflow-"$BETTERFLOW_VERSION"-macOS.zip \
             dist/release/Betterflow-"$BETTERFLOW_VERSION"-macOS.dmg \
+            dist/release/Betterflow-macOS.dmg \
             dist/release/SHA256SUMS.txt \
             dist/release/appcast.xml \
             "${release_flags[@]}"
