@@ -25,7 +25,7 @@ actor MicrophoneCaptureLifecycle {
 }
 
 final class MicrophoneCapture: @unchecked Sendable {
-  static let sampleRate = 16_000.0
+  static let sampleRate = 24_000.0
   static let bufferDurationSeconds = 0.03
 
   private let lock = NSLock()

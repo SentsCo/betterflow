@@ -46,3 +46,25 @@ func cloudTranscriptionPreferencesPersistIndependently() {
   #expect(reloaded.guideWordStrength(for: .deepgram) == .normal)
   #expect(reloaded.guideWordStrength(for: .elevenLabs) == .conservative)
 }
+
+@Test
+func streamingAudioResamplerPreservesSamplesAcrossChunks() {
+  var resampler = StreamingAudioResampler(sourceRate: 16_000, destinationRate: 24_000)
+  let first = resampler.process(Array(repeating: 0.5, count: 480), final: false)
+  let second = resampler.process(Array(repeating: 0.5, count: 480), final: true)
+  let output = first + second
+
+  #expect(output.count == 1_440)
+  #expect(output.allSatisfy { abs($0 - 0.5) < 0.000_001 })
+}
+
+@Test
+func streamingAudioResamplerDownsamplesCaptureAudioAcrossChunks() {
+  var resampler = StreamingAudioResampler(sourceRate: 24_000, destinationRate: 16_000)
+  let first = resampler.process(Array(repeating: -0.25, count: 720), final: false)
+  let second = resampler.process(Array(repeating: -0.25, count: 720), final: true)
+  let output = first + second
+
+  #expect(output.count == 960)
+  #expect(output.allSatisfy { abs($0 + 0.25) < 0.000_001 })
+}

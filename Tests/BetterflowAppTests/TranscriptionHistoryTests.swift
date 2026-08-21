@@ -13,7 +13,11 @@ func transcriptionHistoryPersistsNewestFirst() throws {
 
   let history = TranscriptionHistory(fileURL: fileURL)
   history.add("First transcription")
-  history.add("Latest transcription", rawText: "Um latest transcription")
+  history.add(
+    "Latest transcription",
+    rawText: "Um latest transcription",
+    recognitionEngine: "OpenAI GPT Live Transcribe"
+  )
 
   #expect(history.items.map(\.text) == ["Latest transcription", "First transcription"])
   #expect(history.persistenceError == nil)
@@ -21,5 +25,7 @@ func transcriptionHistoryPersistsNewestFirst() throws {
   let restored = TranscriptionHistory(fileURL: fileURL)
   #expect(restored.items.map(\.text) == ["Latest transcription", "First transcription"])
   #expect(restored.items.first?.rawText == "Um latest transcription")
+  #expect(restored.items.first?.recognitionEngine == "OpenAI GPT Live Transcribe")
   #expect(restored.items.last?.rawText == nil)
+  #expect(restored.items.last?.recognitionEngine == nil)
 }

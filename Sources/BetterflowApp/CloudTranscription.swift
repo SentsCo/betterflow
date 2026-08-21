@@ -270,6 +270,7 @@ actor CloudTranscriptionSession {
   private var finishContinuation: CheckedContinuation<String, Error>?
   private var bufferedFinishResult: Result<String, Error>?
   private var terminalMessage: String?
+  private var providerResampler: StreamingAudioResampler?
   private var sentSampleCount = 0
   private var committedSegments: [String] = []
   private var partialTranscript = ""
@@ -322,6 +323,12 @@ actor CloudTranscriptionSession {
     self.socket = socket
     self.updates = updates
     self.updateContinuation = updateContinuation
+    if provider != .openAI {
+      providerResampler = StreamingAudioResampler(
+        sourceRate: MicrophoneCapture.sampleRate,
+        destinationRate: 16_000
+      )
+    }
   }
 
   func append(samples: [Float]) async throws {
@@ -341,19 +348,15 @@ actor CloudTranscriptionSession {
       ? Array(completeAudio[sentSampleCount...]) : []
     switch provider {
     case .deepgram:
-      if !remaining.isEmpty {
-        try await sendAudio(remaining, commit: false)
-        sentSampleCount = completeAudio.count
-      }
+      try await sendAudio(remaining, commit: true)
+      sentSampleCount = completeAudio.count
       try await sendJSON(["type": "CloseStream"])
     case .elevenLabs:
       try await sendAudio(remaining, commit: true)
       sentSampleCount = completeAudio.count
     case .openAI:
-      if !remaining.isEmpty {
-        try await sendAudio(remaining, commit: false)
-        sentSampleCount = completeAudio.count
-      }
+      try await sendAudio(remaining, commit: true)
+      sentSampleCount = completeAudio.count
       try await sendJSON(["type": "input_audio_buffer.commit"])
     }
 
@@ -408,23 +411,31 @@ actor CloudTranscriptionSession {
         prompt =
           "Transcribe natural English dictation accurately. Expected vocabulary: \(vocabulary)."
       }
+      var transcription: [String: Any] = [
+        "model": "gpt-live-transcribe",
+        "prompt": prompt,
+        "languages": ["en"],
+        "delay": "minimal",
+      ]
+      if guideWordStrength == .normal, !guideWords.isEmpty {
+        transcription["keywords"] = guideWords
+      }
       try await sendJSON([
-        "type": "transcription_session.update",
+        "type": "session.update",
         "session": [
-          "input_audio_format": "pcm16",
-          "input_audio_transcription": [
-            "model": "gpt-live-transcribe",
-            "prompt": prompt,
-            "language": "en",
+          "type": "transcription",
+          "audio": [
+            "input": [
+              "format": [
+                "type": "audio/pcm",
+                "rate": 24_000,
+              ],
+              "transcription": transcription,
+              "turn_detection": NSNull(),
+              "noise_reduction": ["type": "near_field"],
+            ] as [String: Any]
           ],
-          "turn_detection": [
-            "type": "server_vad",
-            "threshold": 0.5,
-            "prefix_padding_ms": 300,
-            "silence_duration_ms": 500,
-          ],
-          "input_audio_noise_reduction": ["type": "near_field"],
-        ],
+        ] as [String: Any],
       ])
     }
   }
@@ -606,18 +617,20 @@ actor CloudTranscriptionSession {
   }
 
   private func sendAudio(_ samples: [Float], commit: Bool) async throws {
-    let data = pcm16Data(samples)
     switch provider {
     case .deepgram:
+      let data = pcm16Data(providerResampler?.process(samples, final: commit) ?? samples)
       guard !data.isEmpty else { return }
       try await socket.send(.data(data))
     case .elevenLabs:
+      let data = pcm16Data(providerResampler?.process(samples, final: commit) ?? samples)
       try await sendJSON([
         "message_type": "input_audio_chunk",
         "audio_base_64": data.base64EncodedString(),
         "commit": commit,
       ])
     case .openAI:
+      let data = pcm16Data(samples)
       guard !data.isEmpty else { return }
       try await sendJSON([
         "type": "input_audio_buffer.append",
@@ -680,7 +693,6 @@ actor CloudTranscriptionSession {
       request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
     case .openAI:
       request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-      request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
     }
     return request
   }
@@ -695,5 +707,47 @@ actor CloudTranscriptionSession {
 
   private func clean(_ text: String) -> String {
     text.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+
+struct StreamingAudioResampler {
+  private let sourceStep: Double
+  private var buffer: [Float] = []
+  private var sourcePosition = 0.0
+
+  init(sourceRate: Double, destinationRate: Double) {
+    precondition(sourceRate > 0 && destinationRate > 0)
+    sourceStep = sourceRate / destinationRate
+  }
+
+  mutating func process(_ samples: [Float], final: Bool) -> [Float] {
+    buffer.append(contentsOf: samples)
+    guard !buffer.isEmpty else { return [] }
+
+    var output: [Float] = []
+    output.reserveCapacity(Int((Double(samples.count) / sourceStep).rounded(.up)))
+    while sourcePosition < Double(buffer.count) {
+      let lowerIndex = Int(sourcePosition)
+      let fraction = Float(sourcePosition - Double(lowerIndex))
+      if lowerIndex + 1 >= buffer.count, fraction > 0.000_001, !final { break }
+      let upperIndex = min(lowerIndex + 1, buffer.count - 1)
+      output.append(
+        buffer[lowerIndex] + (buffer[upperIndex] - buffer[lowerIndex]) * fraction
+      )
+      sourcePosition += sourceStep
+    }
+
+    if final {
+      buffer.removeAll(keepingCapacity: true)
+      sourcePosition = 0
+      return output
+    }
+
+    let discardedCount = min(max(Int(sourcePosition) - 1, 0), buffer.count)
+    if discardedCount > 0 {
+      buffer.removeFirst(discardedCount)
+      sourcePosition -= Double(discardedCount)
+    }
+    return output
   }
 }

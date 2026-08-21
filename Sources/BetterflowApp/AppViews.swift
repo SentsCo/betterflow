@@ -150,6 +150,11 @@ private struct HistorySettingsView: View {
                     Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
                       .font(.caption)
                       .foregroundStyle(.secondary)
+                    if let recognitionEngine = item.recognitionEngine {
+                      Label(recognitionEngine, systemImage: "waveform")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
                     Spacer()
                     Button {
                       model.copyTranscript(item.text)

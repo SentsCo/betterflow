@@ -4,6 +4,7 @@ struct TranscriptionHistoryItem: Codable, Identifiable, Sendable {
   let id: UUID
   let text: String
   let rawText: String?
+  let recognitionEngine: String?
   let createdAt: Date
 }
 
@@ -28,12 +29,13 @@ final class TranscriptionHistory: ObservableObject {
     }
   }
 
-  func add(_ text: String, rawText: String? = nil) {
+  func add(_ text: String, rawText: String? = nil, recognitionEngine: String? = nil) {
     items.insert(
       TranscriptionHistoryItem(
         id: UUID(),
         text: text,
         rawText: rawText,
+        recognitionEngine: recognitionEngine,
         createdAt: Date()
       ),
       at: 0

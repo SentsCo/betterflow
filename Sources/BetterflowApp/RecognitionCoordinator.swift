@@ -63,6 +63,10 @@ private actor RecognitionRuntime {
   private var adapter: (any ModelAdapter)?
   private var liveSession: (any LiveTranscriptionSession)?
   private var liveSampleCount = 0
+  private var liveResampler = StreamingAudioResampler(
+    sourceRate: MicrophoneCapture.sampleRate,
+    destinationRate: AudioIO.targetSampleRate
+  )
   private var loadedModel: BenchmarkModel?
   private var loadedGuideWords: [String] = []
   private var loadedGuideWordStrength = GuideWordStrength.normal
@@ -109,6 +113,10 @@ private actor RecognitionRuntime {
     liveSession = try await adapter?.makeLiveSession(
       guidance: model.supportsGuidance ? .on : .off)
     liveSampleCount = 0
+    liveResampler = StreamingAudioResampler(
+      sourceRate: MicrophoneCapture.sampleRate,
+      destinationRate: AudioIO.targetSampleRate
+    )
   }
 
   func updateLive(samples: [Float], final: Bool) async throws -> HypothesisEvent? {
@@ -118,8 +126,9 @@ private actor RecognitionRuntime {
     }
     let newSamples = Array(samples[liveSampleCount...])
     liveSampleCount = samples.count
+    let modelSamples = liveResampler.process(newSamples, final: final)
     let event = try await liveSession.append(
-      audio: AudioData(samples: newSamples, sampleRate: MicrophoneCapture.sampleRate),
+      audio: AudioData(samples: modelSamples, sampleRate: AudioIO.targetSampleRate),
       final: final
     )
     if final {
@@ -143,9 +152,13 @@ private actor RecognitionRuntime {
       guideWordStrength: guideWordStrength
     )
     guard let adapter else { throw RecognitionError.modelUnavailable }
+    var resampler = StreamingAudioResampler(
+      sourceRate: MicrophoneCapture.sampleRate,
+      destinationRate: AudioIO.targetSampleRate
+    )
     let audio = AudioData(
-      samples: samples,
-      sampleRate: MicrophoneCapture.sampleRate
+      samples: resampler.process(samples, final: true),
+      sampleRate: AudioIO.targetSampleRate
     )
     let cadence = max(100, audio.durationSeconds * 1_000 + 100)
     let output = try await adapter.transcribe(
@@ -419,7 +432,7 @@ final class RecognitionCoordinator: ObservableObject {
 
     let delivery = TextDelivery.deliver(currentTranscript, into: target)
     sounds.play(delivery == .inserted ? .textInserted : .insertionFallback)
-    history.add(currentTranscript)
+    history.add(currentTranscript, recognitionEngine: recognitionEngine)
   }
 
   func cancelDictation() {
@@ -766,7 +779,8 @@ final class RecognitionCoordinator: ObservableObject {
       transcript = deliveredTranscript
       history.add(
         deliveredTranscript,
-        rawText: appliedCleanup ? rawTranscript : nil
+        rawText: appliedCleanup ? rawTranscript : nil,
+        recognitionEngine: recognitionEngine
       )
       let target = insertionTarget
       insertionTargetTask?.cancel()
