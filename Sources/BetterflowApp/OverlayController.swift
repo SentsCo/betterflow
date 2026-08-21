@@ -155,5 +155,6 @@ private struct AudioLevelIndicator: View {
       }
     }
     .frame(width: 20, height: 36)
+    .animation(.linear(duration: 0.1), value: meter.level)
   }
 }

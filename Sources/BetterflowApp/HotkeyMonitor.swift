@@ -13,7 +13,7 @@ enum DictationKeyboardMode: Sendable {
   case finalizing
 }
 
-enum DictationKeyCommand: Equatable {
+enum DictationKeyCommand: Equatable, Sendable {
   case finish
   case queueReturn
   case insertCurrent
@@ -123,6 +123,7 @@ final class HotkeyMonitor {
     if let eventTapSource {
       CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
     }
+    commandInterceptor.setEventTap(nil)
     if let eventTap { CFMachPortInvalidate(eventTap) }
     globalMonitor = nil
     localMonitor = nil
@@ -157,6 +158,7 @@ final class HotkeyMonitor {
     let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
     self.eventTap = eventTap
     eventTapSource = source
+    commandInterceptor.setEventTap(eventTap)
     CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
     CGEvent.tapEnable(tap: eventTap, enable: true)
   }
@@ -211,6 +213,7 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
   private var ignoredModifierFlags: CGEventFlags = []
   private var screenshotShortcut: ScreenshotShortcut
   private var swallowedKeyCodes: Set<Int64> = []
+  private var eventTap: CFMachPort?
 
   init(
     screenshotShortcut: ScreenshotShortcut,
@@ -239,6 +242,23 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
 
   func setScreenshotShortcut(_ shortcut: ScreenshotShortcut) {
     lock.withLock { screenshotShortcut = shortcut }
+  }
+
+  func setEventTap(_ eventTap: CFMachPort?) {
+    lock.withLock {
+      self.eventTap = eventTap
+      swallowedKeyCodes.removeAll()
+    }
+  }
+
+  func reenableEventTap(disabledBy type: CGEventType) {
+    let eventTap = lock.withLock {
+      swallowedKeyCodes.removeAll()
+      return self.eventTap
+    }
+    guard let eventTap else { return }
+    CGEvent.tapEnable(tap: eventTap, enable: true)
+    hotkeyLogger.notice("Key event tap re-enabled after macOS disabled it type=\(type.rawValue)")
   }
 
   func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -270,17 +290,19 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
       return (true, isFirstPress ? .dictation(command) : nil)
     }
     if let command = result.command {
-      // This interceptor is installed on the main run loop.
-      MainActor.assumeIsolated {
-        switch command {
-        case .screenshot: onScreenshot()
-        case .dictation(let command):
+      // Event-tap callbacks must return promptly or macOS disables the tap.
+      DispatchQueue.main.async { [self] in
+        MainActor.assumeIsolated {
           switch command {
-          case .finish: onFinish()
-          case .queueReturn: onQueueReturn()
-          case .insertCurrent: onInsertCurrent()
-          case .toggleCleanup: onToggleCleanup()
-          case .cancel: onCancel()
+          case .screenshot: onScreenshot()
+          case .dictation(let command):
+            switch command {
+            case .finish: onFinish()
+            case .queueReturn: onQueueReturn()
+            case .insertCurrent: onInsertCurrent()
+            case .toggleCleanup: onToggleCleanup()
+            case .cancel: onCancel()
+            }
           }
         }
       }
@@ -289,7 +311,7 @@ private final class KeyCommandInterceptor: @unchecked Sendable {
   }
 }
 
-private enum InterceptedKeyCommand {
+private enum InterceptedKeyCommand: Sendable {
   case screenshot
   case dictation(DictationKeyCommand)
 }
@@ -302,5 +324,9 @@ private func keyCommandEventTapCallback(
 ) -> Unmanaged<CGEvent>? {
   guard let userInfo else { return Unmanaged.passUnretained(event) }
   let interceptor = Unmanaged<KeyCommandInterceptor>.fromOpaque(userInfo).takeUnretainedValue()
+  if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+    interceptor.reenableEventTap(disabledBy: type)
+    return Unmanaged.passUnretained(event)
+  }
   return interceptor.handle(type: type, event: event)
 }

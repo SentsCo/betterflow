@@ -40,7 +40,7 @@ final class MicrophoneCapture: @unchecked Sendable {
   private var queue: AudioQueueRef?
   private var samples: [Float] = []
   private var active = false
-  private var latestLevel = 0.0
+  private var pendingPeakLevel = 0.0
   private var sampleUpdatesContinuation: AsyncStream<Int>.Continuation?
 
   func start(deviceUID: String?) throws -> AsyncStream<Int> {
@@ -50,7 +50,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     )
     lock.withLock {
       samples.removeAll(keepingCapacity: true)
-      latestLevel = 0
+      pendingPeakLevel = 0
       sampleUpdatesContinuation = continuation
     }
 
@@ -136,7 +136,7 @@ final class MicrophoneCapture: @unchecked Sendable {
       sampleUpdatesContinuation = nil
       let currentQueue = queue
       queue = nil
-      latestLevel = 0
+      pendingPeakLevel = 0
       return (currentQueue, continuation, samples)
     }
     continuation?.finish()
@@ -162,8 +162,11 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
   }
 
-  func level() -> Double {
-    lock.withLock { latestLevel }
+  func consumePeakLevel() -> Double {
+    lock.withLock {
+      defer { pendingPeakLevel = 0 }
+      return pendingPeakLevel
+    }
   }
 
   fileprivate func receive(buffer: AudioQueueBufferRef, queue: AudioQueueRef) {
@@ -175,7 +178,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     let update = lock.withLock { () -> (AsyncStream<Int>.Continuation, Int)? in
       guard active, self.queue == queue, let sampleUpdatesContinuation else { return nil }
       samples.append(contentsOf: chunk)
-      latestLevel = min(1, level * 8)
+      pendingPeakLevel = max(pendingPeakLevel, min(1, level * 8))
       return (sampleUpdatesContinuation, samples.count)
     }
     if let (continuation, sampleCount) = update {

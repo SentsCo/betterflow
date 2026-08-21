@@ -847,14 +847,11 @@ final class RecognitionCoordinator: ObservableObject {
     audioMeterTask?.cancel()
     audioMeterTask = Task { [weak self] in
       while !Task.isCancelled {
-        try? await Task.sleep(for: .milliseconds(16))
+        try? await Task.sleep(for: .milliseconds(80))
         guard !Task.isCancelled, let self, self.recording, self.currentSession == session else {
           return
         }
-        let level = self.capture.level()
-        let response = level > self.audioMeter.level ? 0.27 : 0.08
-        self.audioMeter.update(
-          self.audioMeter.level + (level - self.audioMeter.level) * response)
+        self.audioMeter.update(self.capture.consumePeakLevel())
       }
     }
   }
