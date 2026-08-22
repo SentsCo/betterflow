@@ -113,7 +113,7 @@ struct SettingsView: View {
         credentials: model.cloudCredentials
       )
       .tabItem { Label("Cloud", systemImage: "cloud") }
-      VocabularySettingsView(model: model, settings: model.settings)
+      VocabularySettingsView(settings: model.settings)
         .tabItem { Label("Vocabulary", systemImage: "text.book.closed") }
       HistorySettingsView(model: model, history: model.history)
         .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
@@ -215,9 +215,13 @@ private struct GeneralSettingsView: View {
             Text(key.label).tag(key)
           }
         }
-        Text(
-          "Press once to start and again to finish. Enter finishes; press it again while finishing to send afterward. Command-Enter inserts immediately; Z toggles cleanup; Escape cancels."
-        )
+        Picker("Activation", selection: $settings.dictationActivationBehavior) {
+          ForEach(DictationActivationBehavior.allCases) { behavior in
+            Text(behavior.label).tag(behavior)
+          }
+        }
+        .pickerStyle(.segmented)
+        Text(dictationInstructions)
         .font(.caption)
         .foregroundStyle(.secondary)
         Toggle("Show the live transcription bubble", isOn: $settings.showOverlay)
@@ -277,6 +281,15 @@ private struct GeneralSettingsView: View {
     }
     .formStyle(.grouped)
   }
+
+  private var dictationInstructions: String {
+    let activation = switch settings.dictationActivationBehavior {
+    case .toggle: "Press once to start and again to finish."
+    case .pushToTalk: "Hold the key to dictate and release it to finish."
+    case .both: "Tap to keep dictating, or hold and release to finish."
+    }
+    return "\(activation) Enter finishes; press it again while finishing to send afterward. Command-Enter inserts immediately; Z toggles cleanup; Escape cancels."
+  }
 }
 
 private struct PermissionRow: View {
@@ -326,6 +339,14 @@ private struct ModelSettingsView: View {
               delete: { deleteCandidate = candidate }
             )
           }
+        }
+        if settings.selectedModel.supportsGuideWordStrength {
+          Picker("Guide word strength", selection: localStrengthBinding) {
+            ForEach(GuideWordStrength.allCases) { strength in
+              Text(strength.displayName).tag(strength)
+            }
+          }
+          .pickerStyle(.segmented)
         }
         Text("Speed and accuracy are relative estimates on Apple silicon; actual performance varies by Mac and speaking style.")
           .font(.caption)
@@ -391,6 +412,13 @@ private struct ModelSettingsView: View {
     } message: {
       Text("You can download it again later.")
     }
+  }
+
+  private var localStrengthBinding: Binding<GuideWordStrength> {
+    Binding(
+      get: { settings.guideWordStrength(for: settings.selectedModel) },
+      set: { downloads.setGuideWordStrength($0) }
+    )
   }
 }
 
@@ -907,22 +935,10 @@ private struct CloudSettingsView: View {
 }
 
 private struct VocabularySettingsView: View {
-  @ObservedObject var model: AppModel
   @ObservedObject var settings: AppSettings
 
   var body: some View {
     Form {
-      if settings.selectedModel.supportsGuideWordStrength {
-        Section("Strength for \(settings.selectedModel.displayName)") {
-          Picker("Strength", selection: strengthBinding) {
-            ForEach(GuideWordStrength.allCases) { strength in
-              Text(strength.displayName).tag(strength)
-            }
-          }
-          .pickerStyle(.segmented)
-        }
-      }
-
       Section {
         ForEach(settings.guideWords.indices, id: \.self) { index in
           HStack {
@@ -951,16 +967,6 @@ private struct VocabularySettingsView: View {
     }
     .formStyle(.grouped)
   }
-
-  private var strengthBinding: Binding<GuideWordStrength> {
-    Binding(
-      get: { settings.guideWordStrength(for: settings.selectedModel) },
-      set: { strength in
-        settings.setGuideWordStrength(strength, for: settings.selectedModel)
-        model.coordinator.prepareSelectedModel()
-      }
-    )
-  }
 }
 
 private struct AudioSettingsView: View {
@@ -975,6 +981,19 @@ private struct AudioSettingsView: View {
           isOn: $settings.microphonePriorityEnabled
         )
         LabeledContent("System default", value: systemDefault?.name ?? "Unavailable")
+      }
+
+      Section {
+        Picker("When idle", selection: $settings.microphoneIdleBehavior) {
+          ForEach(MicrophoneIdleBehavior.allCases) { behavior in
+            Text(behavior.label).tag(behavior)
+          }
+        }
+        .pickerStyle(.segmented)
+      } header: {
+        Text("Microphone Readiness")
+      } footer: {
+        Text("Stopped releases the input hardware. Paused resumes faster but may keep the microphone indicator active.")
       }
 
       if settings.microphonePriorityEnabled {

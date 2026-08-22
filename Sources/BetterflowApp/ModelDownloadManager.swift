@@ -66,6 +66,11 @@ final class ModelDownloadManager: ObservableObject {
     }
   }
 
+  func setGuideWordStrength(_ strength: GuideWordStrength) {
+    settings.setGuideWordStrength(strength, for: settings.selectedModel)
+    coordinator.prepareSelectedModel()
+  }
+
   func download(_ model: BenchmarkModel) {
     guard states[model]?.isBusy != true else { return }
     states[model] = .downloading

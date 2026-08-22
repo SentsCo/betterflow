@@ -76,7 +76,10 @@ final class AppModel: ObservableObject {
     }
     hotkey = HotkeyMonitor(
       key: { [settings] in settings.dictationKey },
+      activationBehavior: { [settings] in settings.dictationActivationBehavior },
       onToggle: { [coordinator] in coordinator.toggleDictation() },
+      onPushToTalkStart: { [coordinator] in coordinator.beginDictation() },
+      onPushToTalkFinish: { [coordinator] in coordinator.finishDictation() },
       screenshotShortcut: settings.screenshotShortcut,
       onScreenshot: { [weak self] in self?.beginScreenshot() },
       onFinish: { [coordinator] in coordinator.finishDictation() },
@@ -90,6 +93,9 @@ final class AppModel: ObservableObject {
     }
     settings.$screenshotShortcut
       .sink { [weak hotkey] shortcut in hotkey?.setScreenshotShortcut(shortcut) }
+      .store(in: &cancellables)
+    settings.$microphoneIdleBehavior
+      .sink { [coordinator] behavior in coordinator.setMicrophoneIdleBehavior(behavior) }
       .store(in: &cancellables)
     screenshots.onCopied = { [sounds] in sounds.play(.textCopied) }
     screenshots.onFailure = { [weak self] message in self?.showScreenshotError(message) }

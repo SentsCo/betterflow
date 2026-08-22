@@ -4,6 +4,26 @@ import Testing
 @testable import BetterflowApp
 
 @Test
+func hybridDictationGestureLatchesOnTapAndFinishesOnHold() {
+  var gesture = HybridDictationGesture()
+
+  gesture.press(dictationStarted: true, at: 10)
+  #expect(gesture.release(at: 10.1, holdThreshold: 0.25) == .latch)
+
+  gesture.press(dictationStarted: true, at: 20)
+  #expect(gesture.release(at: 20.3, holdThreshold: 0.25) == .finish)
+}
+
+@Test
+func hybridDictationGestureIgnoresPressWhenDictationDidNotStart() {
+  var gesture = HybridDictationGesture()
+
+  gesture.press(dictationStarted: false, at: 10)
+
+  #expect(gesture.release(at: 11, holdThreshold: 0.25) == .none)
+}
+
+@Test
 func dictationKeyCommandsRespectModifiersAndSessionState() {
   #expect(
     dictationKeyCommand(keyCode: 36, flags: [], mode: .recording) == .finish

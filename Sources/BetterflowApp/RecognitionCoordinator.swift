@@ -222,6 +222,8 @@ final class RecognitionCoordinator: ObservableObject {
   private var audioMeterTask: Task<Void, Never>?
   private var finalizationTask: Task<Void, Never>?
   private var runtimeCancellationTask: Task<Void, Never>?
+  private var microphonePreparationTask: Task<Void, Never>?
+  private var microphoneIdleTask: Task<Void, Never>?
   private var currentSession = UUID()
   private var insertionTarget: TextInsertionTarget?
   private var cleanupModelForSession = CleanupModel.appleFoundation
@@ -301,6 +303,17 @@ final class RecognitionCoordinator: ObservableObject {
 
   func updateAudioDevices(_ devices: [AudioInputDevice]) {
     availableAudioDevices = devices
+    prepareMicrophone()
+  }
+
+  func setMicrophoneIdleBehavior(_ behavior: MicrophoneIdleBehavior) {
+    guard !dictationActive, !recording, state != .finalizing else { return }
+    let captureLifecycle = captureLifecycle
+    let pendingIdle = microphoneIdleTask
+    microphoneIdleTask = Task.detached(priority: .userInitiated) {
+      await pendingIdle?.value
+      await captureLifecycle.enterIdle(behavior)
+    }
   }
 
   func unloadModel(_ model: BenchmarkModel) async throws {
@@ -315,8 +328,9 @@ final class RecognitionCoordinator: ObservableObject {
     if settings.selectedModel == model { state = .idle }
   }
 
-  func beginDictation() {
-    guard !dictationActive, !recording, state != .finalizing else { return }
+  @discardableResult
+  func beginDictation() -> Bool {
+    guard !dictationActive, !recording, state != .finalizing else { return false }
     dictationActive = true
     onKeyboardModeChange?(.recording)
     let session = UUID()
@@ -355,6 +369,7 @@ final class RecognitionCoordinator: ObservableObject {
       self?.insertionTargetTask = nil
     }
     sounds.play(.recordingStarted)
+    return true
   }
 
   func finishDictation() {
@@ -385,7 +400,8 @@ final class RecognitionCoordinator: ObservableObject {
     state = .finalizing
     onKeyboardModeChange?(.finalizing)
     let session = currentSession
-    let samples = capture.stop()
+    let samples = capture.finish()
+    parkMicrophone()
     recognitionLogger.info(
       "Capture stopped samples=\(samples.count) elapsedMs=\(finishRequested.duration(to: .now).milliseconds)"
     )
@@ -470,9 +486,18 @@ final class RecognitionCoordinator: ObservableObject {
     insertionTargetTask = nil
     insertionTarget = nil
     onKeyboardModeChange?(.none)
+    _ = capture.finish()
+    parkMicrophone()
     let captureLifecycle = captureLifecycle
+    let pendingMicrophonePreparation = microphonePreparationTask
+    microphonePreparationTask?.cancel()
+    microphonePreparationTask = nil
+    let pendingMicrophoneIdle = microphoneIdleTask
+    microphoneIdleTask = nil
     Task {
-      _ = await captureLifecycle.stop()
+      await pendingMicrophonePreparation?.value
+      await pendingMicrophoneIdle?.value
+      await captureLifecycle.shutdown()
       await pendingStartup?.value
       await pendingLiveUpdate?.value
       await pendingCloud?.cancel()
@@ -487,6 +512,8 @@ final class RecognitionCoordinator: ObservableObject {
 
   private func beginCapture(session: UUID) async {
     await runtimeCancellationTask?.value
+    await microphonePreparationTask?.value
+    await microphoneIdleTask?.value
     guard dictationActive, currentSession == session else { return }
     let model = localModelForSession
     let provider = cloudProviderForSession
@@ -511,7 +538,15 @@ final class RecognitionCoordinator: ObservableObject {
       priority: settings.microphonePriority
     )
     do {
-      let audioUpdates = try await captureLifecycle.start(deviceUID: device?.id)
+      let captureLifecycle = captureLifecycle
+      let deviceUID = device?.id
+      let captureStarted = ContinuousClock.now
+      let audioUpdates = try await Task.detached(priority: .userInitiated) {
+        try await captureLifecycle.start(deviceUID: deviceUID)
+      }.value
+      recognitionLogger.info(
+        "Microphone capture ready elapsedMs=\(captureStarted.duration(to: .now).milliseconds)"
+      )
       guard dictationActive, currentSession == session else { return }
       selectedMicrophone = device?.name ?? "System Default"
       recording = true
@@ -881,18 +916,54 @@ final class RecognitionCoordinator: ObservableObject {
   }
 
   private func beginBackgroundCleanup() {
-    let captureLifecycle = captureLifecycle
+    _ = capture.finish()
+    parkMicrophone()
     let runtime = runtime
     let cloud = cloudSession
     cloudSession = nil
     cloudUpdatesTask?.cancel()
     cloudUpdatesTask = nil
     let pendingCleanup = runtimeCancellationTask
+    let pendingMicrophoneIdle = microphoneIdleTask
     runtimeCancellationTask = Task.detached(priority: .utility) {
       await pendingCleanup?.value
-      _ = await captureLifecycle.stop()
+      await pendingMicrophoneIdle?.value
       await cloud?.cancel()
       await runtime.cancelLive()
+    }
+  }
+
+  private func prepareMicrophone() {
+    guard AppPermission.microphoneGranted, !dictationActive, !recording, state != .finalizing
+    else { return }
+    let device = AudioDeviceCatalog.selectedDevice(
+      in: availableAudioDevices,
+      priorityEnabled: settings.microphonePriorityEnabled,
+      priority: settings.microphonePriority
+    )
+    let captureLifecycle = captureLifecycle
+    let pendingIdle = microphoneIdleTask
+    microphonePreparationTask?.cancel()
+    microphonePreparationTask = Task.detached(priority: .utility) {
+      await pendingIdle?.value
+      guard !Task.isCancelled else { return }
+      do {
+        try await captureLifecycle.prepare(deviceUID: device?.id)
+      } catch {
+        recognitionLogger.notice(
+          "Microphone prewarm failed error=\(error.localizedDescription, privacy: .public)"
+        )
+      }
+    }
+  }
+
+  private func parkMicrophone() {
+    let captureLifecycle = captureLifecycle
+    let behavior = settings.microphoneIdleBehavior
+    let pendingIdle = microphoneIdleTask
+    microphoneIdleTask = Task.detached(priority: .userInitiated) {
+      await pendingIdle?.value
+      await captureLifecycle.enterIdle(behavior)
     }
   }
 

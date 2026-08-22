@@ -68,20 +68,67 @@ extension ScreenshotShortcut {
   }
 }
 
+struct HybridDictationGesture {
+  enum ReleaseAction: Equatable {
+    case latch
+    case finish
+    case none
+  }
+
+  private enum Phase {
+    case idle
+    case pressed(at: TimeInterval)
+    case ignored
+  }
+
+  private var phase = Phase.idle
+
+  mutating func press(dictationStarted: Bool, at timestamp: TimeInterval) {
+    phase = dictationStarted ? .pressed(at: timestamp) : .ignored
+  }
+
+  mutating func release(
+    at timestamp: TimeInterval,
+    holdThreshold: TimeInterval
+  ) -> ReleaseAction {
+    defer { phase = .idle }
+    switch phase {
+    case .pressed(let pressedAt):
+      return timestamp - pressedAt >= holdThreshold ? .finish : .latch
+    case .idle, .ignored: return .none
+    }
+  }
+
+  mutating func cancel() {
+    phase = .idle
+  }
+}
+
 @MainActor
 final class HotkeyMonitor {
+  private static let holdThreshold = 0.25
+
   private let key: () -> DictationKey
+  private let activationBehavior: () -> DictationActivationBehavior
   private let onToggle: () -> Void
+  private let onPushToTalkStart: () -> Bool
+  private let onPushToTalkFinish: () -> Void
   private let commandInterceptor: KeyCommandInterceptor
   private var globalMonitor: Any?
   private var localMonitor: Any?
   private var eventTap: CFMachPort?
   private var eventTapSource: CFRunLoopSource?
   private var pressed = false
+  private var pressedBehavior: DictationActivationBehavior?
+  private var pushToTalkActive = false
+  private var hybridGesture = HybridDictationGesture()
 
   init(
     key: @escaping () -> DictationKey,
+    activationBehavior: @escaping () -> DictationActivationBehavior,
     onToggle: @escaping () -> Void,
+    onPushToTalkStart: @escaping () -> Bool,
+    onPushToTalkFinish: @escaping () -> Void,
     screenshotShortcut: ScreenshotShortcut,
     onScreenshot: @escaping @MainActor @Sendable () -> Void,
     onFinish: @escaping @MainActor @Sendable () -> Void,
@@ -91,7 +138,10 @@ final class HotkeyMonitor {
     onCancel: @escaping @MainActor @Sendable () -> Void
   ) {
     self.key = key
+    self.activationBehavior = activationBehavior
     self.onToggle = onToggle
+    self.onPushToTalkStart = onPushToTalkStart
+    self.onPushToTalkFinish = onPushToTalkFinish
     commandInterceptor = KeyCommandInterceptor(
       screenshotShortcut: screenshotShortcut,
       onScreenshot: onScreenshot,
@@ -130,10 +180,17 @@ final class HotkeyMonitor {
     eventTap = nil
     eventTapSource = nil
     pressed = false
+    pressedBehavior = nil
+    pushToTalkActive = false
+    hybridGesture.cancel()
     commandInterceptor.setMode(.none)
   }
 
   func setDictationMode(_ mode: DictationKeyboardMode) {
+    if mode != .recording {
+      pushToTalkActive = false
+      hybridGesture.cancel()
+    }
     commandInterceptor.setMode(mode, ignoring: key().eventFlag)
   }
 
@@ -196,7 +253,37 @@ final class HotkeyMonitor {
         (ProcessInfo.processInfo.systemUptime - event.timestamp) * 1_000
       )
       hotkeyLogger.info("Dictation hotkey received eventAgeMs=\(eventAgeMilliseconds)")
-      onToggle()
+      let behavior = activationBehavior()
+      pressedBehavior = behavior
+      switch behavior {
+      case .toggle:
+        onToggle()
+      case .pushToTalk:
+        pushToTalkActive = onPushToTalkStart()
+      case .both:
+        hybridGesture.press(
+          dictationStarted: onPushToTalkStart(),
+          at: event.timestamp
+        )
+      }
+      return
+    }
+
+    defer { pressedBehavior = nil }
+    switch pressedBehavior {
+    case .pushToTalk where pushToTalkActive:
+      pushToTalkActive = false
+      onPushToTalkFinish()
+    case .both:
+      if hybridGesture.release(
+        at: event.timestamp,
+        holdThreshold: Self.holdThreshold
+      ) == .finish
+      {
+        onPushToTalkFinish()
+      }
+    case .toggle, .pushToTalk, .none:
+      break
     }
   }
 }

@@ -27,6 +27,36 @@ enum DictationKey: String, CaseIterable, Identifiable {
   }
 }
 
+enum DictationActivationBehavior: String, CaseIterable, Identifiable, Sendable {
+  case toggle
+  case pushToTalk
+  case both
+
+  var id: String { rawValue }
+
+  var label: String {
+    switch self {
+    case .toggle: "Toggle"
+    case .pushToTalk: "Push to Talk"
+    case .both: "Both"
+    }
+  }
+}
+
+enum MicrophoneIdleBehavior: String, CaseIterable, Identifiable, Sendable {
+  case stopped
+  case paused
+
+  var id: String { rawValue }
+
+  var label: String {
+    switch self {
+    case .stopped: "Stopped"
+    case .paused: "Paused"
+    }
+  }
+}
+
 struct ScreenshotShortcut: Codable, Equatable, Sendable {
   static let standard = ScreenshotShortcut(
     keyCode: 19,
@@ -64,8 +94,10 @@ final class AppSettings: ObservableObject {
     static let priorityEnabled = "microphonePriorityEnabled"
     static let microphonePriority = "microphonePriority"
     static let knownMicrophoneNames = "knownMicrophoneNames"
+    static let microphoneIdleBehavior = "microphoneIdleBehavior"
     static let dictationKey = "dictationKey"
     static let legacyPushToTalkKey = "pushToTalkKey"
+    static let dictationActivationBehavior = "dictationActivationBehavior"
     static let showOverlay = "showOverlay"
     static let cleanupModel = "cleanupModel"
     static let cleanupEnabledByDefault = "cleanupEnabledByDefault"
@@ -100,8 +132,21 @@ final class AppSettings: ObservableObject {
     didSet { defaults.set(knownMicrophoneNames, forKey: Key.knownMicrophoneNames) }
   }
 
+  @Published var microphoneIdleBehavior: MicrophoneIdleBehavior {
+    didSet { defaults.set(microphoneIdleBehavior.rawValue, forKey: Key.microphoneIdleBehavior) }
+  }
+
   @Published var dictationKey: DictationKey {
     didSet { defaults.set(dictationKey.rawValue, forKey: Key.dictationKey) }
+  }
+
+  @Published var dictationActivationBehavior: DictationActivationBehavior {
+    didSet {
+      defaults.set(
+        dictationActivationBehavior.rawValue,
+        forKey: Key.dictationActivationBehavior
+      )
+    }
   }
 
   @Published var showOverlay: Bool {
@@ -146,10 +191,16 @@ final class AppSettings: ObservableObject {
     microphonePriority = defaults.stringArray(forKey: Key.microphonePriority) ?? []
     knownMicrophoneNames =
       defaults.dictionary(forKey: Key.knownMicrophoneNames) as? [String: String] ?? [:]
+    microphoneIdleBehavior =
+      defaults.string(forKey: Key.microphoneIdleBehavior)
+      .flatMap(MicrophoneIdleBehavior.init(rawValue:)) ?? .stopped
     dictationKey =
       (defaults.string(forKey: Key.dictationKey)
       ?? defaults.string(forKey: Key.legacyPushToTalkKey))
       .flatMap(DictationKey.init(rawValue:)) ?? .rightControl
+    dictationActivationBehavior =
+      defaults.string(forKey: Key.dictationActivationBehavior)
+      .flatMap(DictationActivationBehavior.init(rawValue:)) ?? .toggle
     showOverlay = defaults.object(forKey: Key.showOverlay) as? Bool ?? true
     cleanupModel =
       defaults.string(forKey: Key.cleanupModel)
