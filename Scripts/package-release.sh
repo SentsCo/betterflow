@@ -59,5 +59,8 @@ xcrun stapler staple "$dmg_path"
 xcrun stapler validate "$dmg_path"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg_path"
 
-shasum -a 256 "$zip_path" "$dmg_path" > "$release_dir/SHA256SUMS.txt"
+(
+  cd "$release_dir"
+  shasum -a 256 "$artifact_base.zip" "$artifact_base.dmg" > SHA256SUMS.txt
+)
 print "$release_dir"
