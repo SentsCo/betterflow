@@ -82,11 +82,11 @@ fi
 ditto "$sparkle_framework_source" "$frameworks_dir/Sparkle.framework"
 
 signing_identity="${BETTERFLOW_SIGNING_IDENTITY:-}"
-if [[ -z "$signing_identity" && "$distribution" == "1" ]]; then
+if [[ -z "$signing_identity" ]]; then
   signing_identity=$(security find-identity -v -p codesigning \
     | awk '/Developer ID Application:/ { print $2; exit }')
 fi
-if [[ -z "$signing_identity" ]]; then
+if [[ -z "$signing_identity" && "$distribution" != "1" ]]; then
   signing_identity=$(security find-identity -v -p codesigning \
     | awk '/Apple Development:/ { print $2; exit }')
 fi
