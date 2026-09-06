@@ -530,23 +530,21 @@ private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
     let captureRect = rect.standardized.intersection(bounds)
     guard !captureRect.isEmpty else { return nil }
     let scale = window?.backingScaleFactor ?? 2
-    guard
-      let bitmap = NSBitmapImageRep(
-        bitmapDataPlanes: nil,
-        pixelsWide: Int((captureRect.width * scale).rounded()),
-        pixelsHigh: Int((captureRect.height * scale).rounded()),
-        bitsPerSample: 8,
-        samplesPerPixel: 4,
-        hasAlpha: true,
-        isPlanar: false,
-        colorSpaceName: .deviceRGB,
-        bytesPerRow: 0,
-        bitsPerPixel: 0
-      ),
-      let context = NSGraphicsContext(bitmapImageRep: bitmap)
-    else { return nil }
-
+    guard let bitmap = NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: Int((captureRect.width * scale).rounded()),
+      pixelsHigh: Int((captureRect.height * scale).rounded()),
+      bitsPerSample: 8,
+      samplesPerPixel: 4,
+      hasAlpha: true,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    ) else { return nil }
     bitmap.size = captureRect.size
+    guard let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = context
     context.cgContext.translateBy(x: -captureRect.minX, y: -captureRect.minY)
