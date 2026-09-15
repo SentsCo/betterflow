@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 @preconcurrency import ScreenCaptureKit
 
 private enum ScreenshotTool: Int {
@@ -6,6 +7,8 @@ private enum ScreenshotTool: Int {
   case arrow
   case rectangle
   case comment
+  case blur
+  case focus
 }
 
 private struct ScreenshotAnnotation {
@@ -153,7 +156,7 @@ final class ScreenshotAnnotationController {
   private func showToolbar(on screen: NSScreen?) {
     guard let screen else { return }
     let toolbar = makeToolbar()
-    let size = NSSize(width: 650, height: 56)
+    let size = NSSize(width: 730, height: 56)
     let origin = NSPoint(
       x: screen.frame.midX - size.width / 2,
       y: screen.frame.minY + 28
@@ -184,8 +187,15 @@ final class ScreenshotAnnotationController {
     background.layer?.masksToBounds = true
 
     let tools = NSSegmentedControl(
-      images: ["pencil.tip", "arrow.up.right", "rectangle", "text.bubble"].compactMap {
-        NSImage(systemSymbolName: $0, accessibilityDescription: nil)
+      images: [
+        "pencil.tip",
+        "arrow.up.right",
+        "rectangle",
+        "text.bubble",
+        "drop.halffull",
+        "viewfinder.rectangular",
+      ].map {
+        NSImage(systemSymbolName: $0, accessibilityDescription: nil) ?? NSImage()
       },
       trackingMode: .selectOne,
       target: self,
@@ -193,7 +203,8 @@ final class ScreenshotAnnotationController {
     )
     tools.selectedSegment = annotationTool.rawValue
     tools.setAccessibilityLabel("Annotation tool")
-    ["Pen (P)", "Arrow (A)", "Rectangle (R)", "Comment (T)"].enumerated().forEach {
+    ["Pen (P)", "Arrow (A)", "Rectangle (R)", "Comment (T)", "Blur (B)", "Focus (F)"]
+      .enumerated().forEach {
       tools.setToolTip($0.element, forSegment: $0.offset)
     }
     toolControl = tools
@@ -326,14 +337,17 @@ extension ScreenshotAnnotationController: ScreenshotCanvasDelegate {
     activeCanvas?.finishTextEditing()
     annotationTool = tool
     toolControl?.selectedSegment = tool.rawValue
+    if tool == .blur { activeCanvas?.prepareBlur() }
   }
 }
 
 private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
   weak var delegate: ScreenshotCanvasDelegate?
 
+  private let sourceScreenshot: CGImage
   private let screenshot: NSImage
   private let usesLightCommentBubble: Bool
+  private var blurredScreenshot: NSImage?
   private var annotations: [ScreenshotAnnotation] = []
   private var draft: ScreenshotAnnotation?
   private var editingCommentIndex: Int?
@@ -349,6 +363,7 @@ private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
   private var selectionRect = CGRect.zero
 
   init(frame: NSRect, screenshot: CGImage) {
+    sourceScreenshot = screenshot
     self.screenshot = NSImage(cgImage: screenshot, size: frame.size)
     usesLightCommentBubble = screenshotIsMostlyDark(screenshot)
     super.init(frame: frame)
@@ -398,7 +413,7 @@ private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
       draft = ScreenshotAnnotation(
         tool: delegate.annotationTool,
         color: delegate.annotationColor,
-        lineWidth: 4,
+        lineWidth: delegate.annotationTool == .blur ? 36 : 4,
         points: [point]
       )
     }
@@ -446,7 +461,7 @@ private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
         CGPoint(x: targetRect.maxX + 148, y: targetRect.maxY + 48),
         text: commentText
       )
-    } else if draft?.tool == .pen {
+    } else if draft?.tool == .pen || draft?.tool == .blur {
       draft?.points.append(point)
     } else if let first = draft?.points.first {
       draft?.points = [first, point]
@@ -475,6 +490,14 @@ private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
       {
         draft.targetRect = nil
       }
+      if draft.tool == .focus,
+        let rect = annotationRect(draft),
+        (rect.width < 4 || rect.height < 4)
+      {
+        self.draft = nil
+        needsDisplay = true
+        return
+      }
       annotations.append(draft)
       self.draft = nil
       if draft.tool == .comment { startTextEditing(at: annotations.count - 1, isNew: true) }
@@ -500,8 +523,17 @@ private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
     case (0, false): delegate?.selectAnnotationTool(.arrow)
     case (15, false): delegate?.selectAnnotationTool(.rectangle)
     case (17, false): delegate?.selectAnnotationTool(.comment)
+    case (11, false): delegate?.selectAnnotationTool(.blur)
+    case (3, false): delegate?.selectAnnotationTool(.focus)
     default: super.keyDown(with: event)
     }
+  }
+
+  func prepareBlur() {
+    guard blurredScreenshot == nil else { return }
+    let scale = window?.backingScaleFactor ?? 2
+    guard let image = makeBlurredScreenshot(sourceScreenshot, radius: 14 * scale) else { return }
+    blurredScreenshot = NSImage(cgImage: image, size: bounds.size)
   }
 
   func undo() {
@@ -726,10 +758,20 @@ private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
 
   private func drawScene() {
     screenshot.draw(in: bounds)
+    let sceneAnnotations = draft.map { annotations + [$0] } ?? annotations
+    drawBlur(sceneAnnotations.filter { $0.tool == .blur })
+    drawFocusDimming(
+      in: NSGraphicsContext.current?.cgContext,
+      bounds: bounds,
+      focusedRects: sceneAnnotations.compactMap { annotation in
+        annotation.tool == .focus ? annotationRect(annotation) : nil
+      }
+    )
     annotations.enumerated().forEach { index, annotation in
+      guard annotation.tool != .blur else { return }
       draw(annotation, drawsCommentText: index != editingCommentIndex)
     }
-    if let draft { draw(draft) }
+    if let draft, draft.tool != .blur { draw(draft) }
   }
 
   private func draw(_ annotation: ScreenshotAnnotation, drawsCommentText: Bool = true) {
@@ -774,19 +816,75 @@ private final class ScreenshotCanvasView: NSView, NSTextViewDelegate {
       head.lineCapStyle = .round
       head.stroke()
     case .rectangle:
-      guard let end = annotation.points.last else { return }
-      let rect = CGRect(
-        x: min(first.x, end.x),
-        y: min(first.y, end.y),
-        width: abs(end.x - first.x),
-        height: abs(end.y - first.y)
-      )
+      guard let rect = annotationRect(annotation) else { return }
       let path = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
       path.lineWidth = annotation.lineWidth
       path.stroke()
     case .comment:
       drawComment(annotation, drawsText: drawsCommentText)
+    case .blur:
+      break
+    case .focus:
+      guard let rect = annotationRect(annotation) else { return }
+      let path = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
+      path.lineWidth = 2
+      path.stroke()
     }
+  }
+
+  private func drawBlur(_ annotations: [ScreenshotAnnotation]) {
+    guard !annotations.isEmpty else { return }
+    prepareBlur()
+    guard let blurredScreenshot,
+      let context = NSGraphicsContext.current?.cgContext
+    else { return }
+
+    let mask = CGMutablePath()
+    annotations.forEach { annotation in
+      guard let first = annotation.points.first else { return }
+      let hasStroke = annotation.points.dropFirst().contains {
+        hypot($0.x - first.x, $0.y - first.y) >= 0.5
+      }
+      if hasStroke {
+        let line = CGMutablePath()
+        line.move(to: first)
+        annotation.points.dropFirst().forEach { line.addLine(to: $0) }
+        mask.addPath(
+          line.copy(
+            strokingWithWidth: annotation.lineWidth,
+            lineCap: .round,
+            lineJoin: .round,
+            miterLimit: 10
+          )
+        )
+      } else {
+        let radius = annotation.lineWidth / 2
+        mask.addEllipse(
+          in: CGRect(
+            x: first.x - radius,
+            y: first.y - radius,
+            width: radius * 2,
+            height: radius * 2
+          )
+        )
+      }
+    }
+
+    context.saveGState()
+    context.addPath(mask)
+    context.clip()
+    blurredScreenshot.draw(in: bounds)
+    context.restoreGState()
+  }
+
+  private func annotationRect(_ annotation: ScreenshotAnnotation) -> CGRect? {
+    guard let first = annotation.points.first, let end = annotation.points.last else { return nil }
+    return CGRect(
+      x: min(first.x, end.x),
+      y: min(first.y, end.y),
+      width: abs(end.x - first.x),
+      height: abs(end.y - first.y)
+    )
   }
 
   private func drawComment(_ annotation: ScreenshotAnnotation, drawsText: Bool) {
@@ -925,6 +1023,41 @@ private enum ScreenshotCaptureError: LocalizedError {
   var errorDescription: String? {
     "Betterflow could not find a display to capture."
   }
+}
+
+func drawFocusDimming(
+  in context: CGContext?,
+  bounds: CGRect,
+  focusedRects: [CGRect]
+) {
+  guard let context, !focusedRects.isEmpty else { return }
+  context.saveGState()
+  context.beginTransparencyLayer(auxiliaryInfo: nil)
+  context.setFillColor(NSColor.black.withAlphaComponent(0.58).cgColor)
+  context.fill(bounds)
+  context.setBlendMode(.destinationOut)
+  context.setFillColor(NSColor.black.cgColor)
+  focusedRects.forEach {
+    context.addPath(CGPath(roundedRect: $0, cornerWidth: 5, cornerHeight: 5, transform: nil))
+    context.fillPath()
+  }
+  context.endTransparencyLayer()
+  context.restoreGState()
+}
+
+func makeBlurredScreenshot(_ image: CGImage, radius: CGFloat) -> CGImage? {
+  let input = CIImage(cgImage: image)
+  let output = input
+    .clampedToExtent()
+    .applyingFilter(
+      "CIGaussianBlur",
+      parameters: [kCIInputRadiusKey: radius]
+    )
+    .cropped(to: input.extent)
+  return CIContext(options: [.cacheIntermediates: false]).createCGImage(
+    output,
+    from: input.extent
+  )
 }
 
 func screenshotIsMostlyDark(_ image: CGImage) -> Bool {

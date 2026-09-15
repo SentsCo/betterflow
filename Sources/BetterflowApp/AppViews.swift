@@ -232,7 +232,7 @@ private struct GeneralSettingsView: View {
           ShortcutRecorder(shortcut: $settings.screenshotShortcut)
         }
         Text(
-          "Draw first, then select an area or copy the full display. P selects pen, A arrow, and R rectangle. Return selects an area, Command-Return copies the display, Command-Z undoes, and Escape cancels."
+          "Draw first, then select an area or copy the full display. P selects pen, A arrow, R rectangle, T comment, B blur, and F focus. Return selects an area, Command-Return copies the display, Command-Z undoes, and Escape cancels."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
