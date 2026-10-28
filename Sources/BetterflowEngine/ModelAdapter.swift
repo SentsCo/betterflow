@@ -23,8 +23,15 @@ public protocol ModelAdapter: AnyObject, Sendable {
 }
 
 public protocol LiveTranscriptionSession: Actor {
+  /// Whether appending is cheap enough to feed every capture buffer as it arrives, instead of
+  /// batching audio to match the cost of each decoding pass.
+  nonisolated var streamsContinuously: Bool { get }
   func append(audio: AudioData, final: Bool) async throws -> HypothesisEvent
   func close() async
+}
+
+extension LiveTranscriptionSession {
+  public nonisolated var streamsContinuously: Bool { false }
 }
 
 extension ModelAdapter {

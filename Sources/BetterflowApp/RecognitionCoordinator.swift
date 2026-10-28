@@ -119,13 +119,22 @@ private actor RecognitionRuntime {
     )
   }
 
+  var liveSessionStreamsContinuously: Bool {
+    liveSession?.streamsContinuously == true
+  }
+
   func updateLive(samples: [Float], final: Bool) async throws -> HypothesisEvent? {
-    guard let liveSession else { return nil }
+    guard liveSession != nil else { return nil }
     guard samples.count >= liveSampleCount else {
       throw RecognitionError.invalidAudioStream
     }
-    let newSamples = Array(samples[liveSampleCount...])
-    liveSampleCount = samples.count
+    return try await appendLive(samples: Array(samples[liveSampleCount...]), final: final)
+  }
+
+  /// Sends audio captured since the last append, without copying the whole recording.
+  func appendLive(samples newSamples: [Float], final: Bool) async throws -> HypothesisEvent? {
+    guard let liveSession else { return nil }
+    liveSampleCount += newSamples.count
     let modelSamples = liveResampler.process(newSamples, final: final)
     let event = try await liveSession.append(
       audio: AudioData(samples: modelSamples, sampleRate: AudioIO.targetSampleRate),
@@ -537,65 +546,108 @@ final class RecognitionCoordinator: ObservableObject {
       priorityEnabled: settings.microphonePriorityEnabled,
       priority: settings.microphonePriority
     )
+    // Capture buffers audio until the recognizer is ready, so connecting it alongside the
+    // microphone hides whichever takes longer.
+    let recognizerStarted = ContinuousClock.now
+    let recognizer = Task {
+      try await self.connectRecognizer(provider: provider, cloudKey: useCloud ? cloudKey : nil)
+    }
+    let audioUpdates: AsyncStream<Int>
+    let connected: ConnectedRecognizer
     do {
       let captureLifecycle = captureLifecycle
       let deviceUID = device?.id
       let captureStarted = ContinuousClock.now
-      let audioUpdates = try await Task.detached(priority: .userInitiated) {
+      audioUpdates = try await Task.detached(priority: .userInitiated) {
         try await captureLifecycle.start(deviceUID: deviceUID)
       }.value
       recognitionLogger.info(
         "Microphone capture ready elapsedMs=\(captureStarted.duration(to: .now).milliseconds)"
       )
-      guard dictationActive, currentSession == session else { return }
+      guard dictationActive, currentSession == session else {
+        discard(recognizer)
+        return
+      }
       selectedMicrophone = device?.name ?? "System Default"
       recording = true
       state = .listening
       startAudioMeter(session: session)
-      if useCloud, let cloudKey {
-        do {
-          try await startCloudTranscription(
-            provider: provider,
-            apiKey: cloudKey,
-            audioUpdates: audioUpdates,
-            session: session
-          )
-        } catch {
-          if transcriptionModeForSession == .automatic {
-            recognitionLogger.notice(
-              "Cloud startup failed provider=\(provider.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public); using local fallback"
-            )
-            try await startLocalTranscription(audioUpdates: audioUpdates, session: session)
-          } else {
-            throw error
-          }
-        }
-      } else {
-        try await startLocalTranscription(audioUpdates: audioUpdates, session: session)
-      }
+      connected = try await recognizer.value
+      recognitionLogger.info(
+        "Recognizer ready elapsedMs=\(recognizerStarted.duration(to: .now).milliseconds)"
+      )
     } catch {
+      discard(recognizer)
       fail(error.localizedDescription, session: session)
+      return
+    }
+    guard currentSession == session else {
+      discard(recognizer)
+      return
+    }
+    switch connected {
+    case .cloud(let cloud):
+      cloudSession = cloud
+      recognitionEngine = provider.displayName
+      startCloudUpdates(from: cloud, session: session)
+      if recording {
+        startAudioLoop(audioUpdates: audioUpdates, cloud: cloud, session: session)
+      }
+    case .local:
+      recognitionEngine = localModelForSession.displayName
+      if recording {
+        startAudioLoop(audioUpdates: audioUpdates, cloud: nil, session: session)
+      }
     }
   }
 
-  private func startCloudTranscription(
+  private enum ConnectedRecognizer {
+    case cloud(CloudTranscriptionSession)
+    case local
+  }
+
+  /// Connects to the cloud provider when `cloudKey` is given, falling back to the local model in
+  /// automatic mode, and otherwise starts a live session on the local model.
+  private func connectRecognizer(
     provider: CloudTranscriptionProvider,
-    apiKey: String,
-    audioUpdates: AsyncStream<Int>,
-    session: UUID
-  ) async throws {
-    let cloud = try await CloudTranscriptionSession.connect(
-      provider: provider,
-      apiKey: apiKey,
-      guideWords: guideWordsForSession,
-      guideWordStrength: cloudGuideWordStrengthForSession
-    )
-    guard currentSession == session else {
-      await cloud.cancel()
-      return
+    cloudKey: String?
+  ) async throws -> ConnectedRecognizer {
+    if let cloudKey {
+      do {
+        return .cloud(
+          try await CloudTranscriptionSession.connect(
+            provider: provider,
+            apiKey: cloudKey,
+            guideWords: guideWordsForSession,
+            guideWordStrength: cloudGuideWordStrengthForSession
+          )
+        )
+      } catch where transcriptionModeForSession == .automatic {
+        recognitionLogger.notice(
+          "Cloud startup failed provider=\(provider.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public); using local fallback"
+        )
+      }
     }
-    cloudSession = cloud
-    recognitionEngine = provider.displayName
+    let model = localModelForSession
+    guard await ModelStorage.isDownloaded(model) else {
+      throw RecognitionError.localFallbackUnavailable(model.displayName)
+    }
+    try await runtime.startLive(
+      model: model,
+      guideWords: guideWordsForSession,
+      guideWordStrength: localGuideWordStrengthForSession
+    )
+    return .local
+  }
+
+  /// Closes the cloud connection a recognizer opens for a dictation that ended before using it.
+  private func discard(_ recognizer: Task<ConnectedRecognizer, Error>) {
+    Task {
+      if case .cloud(let cloud) = try? await recognizer.value { await cloud.cancel() }
+    }
+  }
+
+  private func startCloudUpdates(from cloud: CloudTranscriptionSession, session: UUID) {
     cloudUpdatesTask?.cancel()
     cloudUpdatesTask = Task { [weak self] in
       do {
@@ -608,31 +660,10 @@ final class RecognitionCoordinator: ObservableObject {
         }
       } catch {
         recognitionLogger.notice(
-          "Cloud update stream failed provider=\(provider.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+          "Cloud update stream failed provider=\(cloud.provider.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
         )
       }
     }
-    if recording {
-      startAudioLoop(audioUpdates: audioUpdates, cloud: cloud, session: session)
-    }
-  }
-
-  private func startLocalTranscription(
-    audioUpdates: AsyncStream<Int>,
-    session: UUID
-  ) async throws {
-    let model = localModelForSession
-    guard await ModelStorage.isDownloaded(model) else {
-      throw RecognitionError.localFallbackUnavailable(model.displayName)
-    }
-    try await runtime.startLive(
-      model: model,
-      guideWords: guideWordsForSession,
-      guideWordStrength: localGuideWordStrengthForSession
-    )
-    guard recording, currentSession == session else { return }
-    recognitionEngine = model.displayName
-    startAudioLoop(audioUpdates: audioUpdates, cloud: nil, session: session)
   }
 
   private func startAudioLoop(
@@ -641,6 +672,7 @@ final class RecognitionCoordinator: ObservableObject {
     session: UUID
   ) {
     let capture = capture
+    let runtime = runtime
     liveTask = Task.detached(priority: .utility) { [weak self] in
       var cloud = initialCloud
       var sentSampleCount = 0
@@ -662,9 +694,17 @@ final class RecognitionCoordinator: ObservableObject {
               session: session
             ) else { return }
             cloud = nil
+            // The local session hasn't heard any of it yet.
+            sentSampleCount = 0
           }
         }
 
+        if await runtime.liveSessionStreamsContinuously {
+          let samples = capture.samples(from: sentSampleCount, through: sampleCount)
+          sentSampleCount = sampleCount
+          guard await self.streamLiveAudio(samples, session: session) else { return }
+          continue
+        }
         guard inferenceGate.shouldRun(at: sampleCount) else { continue }
         let samples = capture.snapshot()
         guard !samples.isEmpty else { continue }
@@ -722,6 +762,19 @@ final class RecognitionCoordinator: ObservableObject {
       fail(error.localizedDescription, session: session)
       return false
     }
+  }
+
+  /// Feeds new audio to a streaming session. Returns false once the dictation is over.
+  private func streamLiveAudio(_ samples: [Float], session: UUID) async -> Bool {
+    guard recording, currentSession == session else { return false }
+    do {
+      let event = try await runtime.appendLive(samples: samples, final: false)
+      guard recording, currentSession == session else { return false }
+      if let event, transcript != event.text { transcript = event.text }
+    } catch {
+      // Final recognition reports real failures.
+    }
+    return true
   }
 
   private func refreshLiveTranscript(samples: [Float], session: UUID) async -> Int? {

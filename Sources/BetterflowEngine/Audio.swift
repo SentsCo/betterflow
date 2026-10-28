@@ -29,16 +29,18 @@ public enum AudioIO {
     )
   }
 
+  /// Mono 32-bit float at the target rate, the format `buffer(samples:)` produces.
+  static let monoFormat = AVAudioFormat(
+    commonFormat: .pcmFormatFloat32,
+    sampleRate: targetSampleRate,
+    channels: 1,
+    interleaved: false
+  )!
+
   static func buffer(samples: ArraySlice<Float>) throws -> AVAudioPCMBuffer {
     guard
-      let format = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: targetSampleRate,
-        channels: 1,
-        interleaved: false
-      ),
       let buffer = AVAudioPCMBuffer(
-        pcmFormat: format,
+        pcmFormat: monoFormat,
         frameCapacity: AVAudioFrameCount(samples.count)
       ), let channel = buffer.floatChannelData?.pointee
     else {
