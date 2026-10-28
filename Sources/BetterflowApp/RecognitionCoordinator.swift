@@ -257,7 +257,8 @@ final class RecognitionCoordinator: ObservableObject {
   }
 
   func prepareSelectedModel() {
-    guard !recording, !dictationActive, state != .finalizing else { return }
+    guard settings.dictationEnabled, !recording, !dictationActive, state != .finalizing
+    else { return }
     modelPreparationTask?.cancel()
     state = .preparing
     let model = settings.selectedModel
@@ -301,6 +302,40 @@ final class RecognitionCoordinator: ObservableObject {
     }
   }
 
+  /// Turning dictation off ends any dictation in progress, releases the microphone and unloads
+  /// the recognition and cleanup models. Turning it back on only prewarms the microphone; the
+  /// caller prepares the models once it knows which are downloaded.
+  func setDictationEnabled(_ enabled: Bool) {
+    guard !enabled else {
+      prepareMicrophone()
+      return
+    }
+    cancelDictation()
+    state = .idle
+    let pendingModelPreparation = modelPreparationTask
+    modelPreparationTask?.cancel()
+    modelPreparationTask = nil
+    let pendingRuntimeCancellation = runtimeCancellationTask
+    let runtime = runtime
+    let cleanupRuntime = cleanupRuntime
+    Task {
+      await pendingModelPreparation?.value
+      await pendingRuntimeCancellation?.value
+      await runtime.close()
+      await cleanupRuntime.unloadQwen()
+    }
+    let captureLifecycle = captureLifecycle
+    let pendingMicrophonePreparation = microphonePreparationTask
+    microphonePreparationTask?.cancel()
+    microphonePreparationTask = nil
+    let pendingMicrophoneIdle = microphoneIdleTask
+    microphoneIdleTask = Task.detached(priority: .utility) {
+      await pendingMicrophonePreparation?.value
+      await pendingMicrophoneIdle?.value
+      await captureLifecycle.shutdown()
+    }
+  }
+
   func updateAudioDevices(_ devices: [AudioInputDevice]) {
     availableAudioDevices = devices
     prepareMicrophone()
@@ -330,7 +365,8 @@ final class RecognitionCoordinator: ObservableObject {
 
   @discardableResult
   func beginDictation() -> Bool {
-    guard !dictationActive, !recording, state != .finalizing else { return false }
+    guard settings.dictationEnabled, !dictationActive, !recording, state != .finalizing
+    else { return false }
     dictationActive = true
     onKeyboardModeChange?(.recording)
     let session = UUID()
@@ -934,7 +970,8 @@ final class RecognitionCoordinator: ObservableObject {
   }
 
   private func prepareMicrophone() {
-    guard AppPermission.microphoneGranted, !dictationActive, !recording, state != .finalizing
+    guard settings.dictationEnabled, AppPermission.microphoneGranted, !dictationActive, !recording,
+      state != .finalizing
     else { return }
     let device = AudioDeviceCatalog.selectedDevice(
       in: availableAudioDevices,

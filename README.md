@@ -12,6 +12,7 @@ Native macOS voice dictation and annotated screenshots.
 - Optionally clean up transcripts on-device with Apple Foundation Models or Qwen3 0.6B.
 - Keep history, fall back to the clipboard, and configure a persistent microphone priority list.
 - Draw over a frozen desktop, then copy a selected area or full display to the clipboard.
+- Turn voice dictation off in Settings to use Betterflow only for screenshots; the dictation key, microphone, and models are then left alone.
 
 ## Build
 

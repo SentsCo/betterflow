@@ -11,24 +11,26 @@ struct MenuContentView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      VStack(alignment: .leading, spacing: 3) {
-        Text(coordinator.state.label)
-          .font(.headline)
-        Text(
-          coordinator.recognitionEngine.isEmpty
-            ? model.settings.selectedModel.displayName : coordinator.recognitionEngine
-        )
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        Label(microphoneName, systemImage: "mic")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
+      if model.settings.dictationEnabled {
+        VStack(alignment: .leading, spacing: 3) {
+          Text(coordinator.state.label)
+            .font(.headline)
+          Text(
+            coordinator.recognitionEngine.isEmpty
+              ? model.settings.selectedModel.displayName : coordinator.recognitionEngine
+          )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          Label(microphoneName, systemImage: "mic")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
 
-      Button(coordinator.state == .listening ? "Stop Dictation" : "Start Dictation") {
-        coordinator.toggleDictation()
+        Button(coordinator.state == .listening ? "Stop Dictation" : "Start Dictation") {
+          coordinator.toggleDictation()
+        }
+        .keyboardShortcut("d")
       }
-      .keyboardShortcut("d")
 
       Button {
         model.beginScreenshot()
@@ -102,23 +104,27 @@ struct SettingsView: View {
     TabView {
       GeneralSettingsView(model: model, settings: model.settings)
         .tabItem { Label("General", systemImage: "switch.2") }
-      ModelSettingsView(
-        settings: model.settings,
-        downloads: model.modelDownloads,
-        cleanupDownloads: model.cleanupModelDownloads
-      )
-      .tabItem { Label("Models", systemImage: "waveform.badge.magnifyingglass") }
-      CloudSettingsView(
-        settings: model.settings,
-        credentials: model.cloudCredentials
-      )
-      .tabItem { Label("Cloud", systemImage: "cloud") }
-      VocabularySettingsView(settings: model.settings)
-        .tabItem { Label("Vocabulary", systemImage: "text.book.closed") }
+      if model.settings.dictationEnabled {
+        ModelSettingsView(
+          settings: model.settings,
+          downloads: model.modelDownloads,
+          cleanupDownloads: model.cleanupModelDownloads
+        )
+        .tabItem { Label("Models", systemImage: "waveform.badge.magnifyingglass") }
+        CloudSettingsView(
+          settings: model.settings,
+          credentials: model.cloudCredentials
+        )
+        .tabItem { Label("Cloud", systemImage: "cloud") }
+        VocabularySettingsView(settings: model.settings)
+          .tabItem { Label("Vocabulary", systemImage: "text.book.closed") }
+      }
       HistorySettingsView(model: model, history: model.history)
         .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
-      AudioSettingsView(model: model, settings: model.settings)
-        .tabItem { Label("Audio", systemImage: "mic") }
+      if model.settings.dictationEnabled {
+        AudioSettingsView(model: model, settings: model.settings)
+          .tabItem { Label("Audio", systemImage: "mic") }
+      }
     }
     .frame(width: 680, height: 520)
     .padding()
@@ -210,21 +216,36 @@ private struct GeneralSettingsView: View {
   var body: some View {
     Form {
       Section("Dictation") {
-        Picker("Start/stop key", selection: $settings.dictationKey) {
-          ForEach(DictationKey.allCases) { key in
-            Text(key.label).tag(key)
+        Toggle(
+          "Voice dictation",
+          isOn: Binding(
+            get: { settings.dictationEnabled },
+            set: { model.setDictationEnabled($0) }
+          )
+        )
+        if settings.dictationEnabled {
+          Picker("Start/stop key", selection: $settings.dictationKey) {
+            ForEach(DictationKey.allCases) { key in
+              Text(key.label).tag(key)
+            }
           }
-        }
-        Picker("Activation", selection: $settings.dictationActivationBehavior) {
-          ForEach(DictationActivationBehavior.allCases) { behavior in
-            Text(behavior.label).tag(behavior)
+          Picker("Activation", selection: $settings.dictationActivationBehavior) {
+            ForEach(DictationActivationBehavior.allCases) { behavior in
+              Text(behavior.label).tag(behavior)
+            }
           }
+          .pickerStyle(.segmented)
+          Text(dictationInstructions)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          Toggle("Show the live transcription bubble", isOn: $settings.showOverlay)
+        } else {
+          Text(
+            "Betterflow ignores the dictation key and leaves the microphone and speech models alone. Screenshots still work."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
         }
-        .pickerStyle(.segmented)
-        Text(dictationInstructions)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        Toggle("Show the live transcription bubble", isOn: $settings.showOverlay)
       }
 
       Section("Screenshots") {
@@ -239,15 +260,19 @@ private struct GeneralSettingsView: View {
       }
 
       Section("Permissions") {
-        PermissionRow(
-          title: "Microphone",
-          detail: "Capture speech from the selected input.",
-          granted: model.microphoneGranted,
-          request: model.requestMicrophone
-        )
+        if settings.dictationEnabled {
+          PermissionRow(
+            title: "Microphone",
+            detail: "Capture speech from the selected input.",
+            granted: model.microphoneGranted,
+            request: model.requestMicrophone
+          )
+        }
         PermissionRow(
           title: "Accessibility",
-          detail: "Insert the final transcript into the focused app.",
+          detail: settings.dictationEnabled
+            ? "Insert the final transcript into the focused app."
+            : "Listen for the screenshot shortcut.",
           granted: model.accessibilityGranted,
           request: model.requestAccessibility
         )

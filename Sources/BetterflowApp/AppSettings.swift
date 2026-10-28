@@ -95,6 +95,7 @@ final class AppSettings: ObservableObject {
     static let microphonePriority = "microphonePriority"
     static let knownMicrophoneNames = "knownMicrophoneNames"
     static let microphoneIdleBehavior = "microphoneIdleBehavior"
+    static let dictationEnabled = "dictationEnabled"
     static let dictationKey = "dictationKey"
     static let legacyPushToTalkKey = "pushToTalkKey"
     static let dictationActivationBehavior = "dictationActivationBehavior"
@@ -134,6 +135,10 @@ final class AppSettings: ObservableObject {
 
   @Published var microphoneIdleBehavior: MicrophoneIdleBehavior {
     didSet { defaults.set(microphoneIdleBehavior.rawValue, forKey: Key.microphoneIdleBehavior) }
+  }
+
+  @Published var dictationEnabled: Bool {
+    didSet { defaults.set(dictationEnabled, forKey: Key.dictationEnabled) }
   }
 
   @Published var dictationKey: DictationKey {
@@ -194,6 +199,7 @@ final class AppSettings: ObservableObject {
     microphoneIdleBehavior =
       defaults.string(forKey: Key.microphoneIdleBehavior)
       .flatMap(MicrophoneIdleBehavior.init(rawValue:)) ?? .stopped
+    dictationEnabled = defaults.object(forKey: Key.dictationEnabled) as? Bool ?? true
     dictationKey =
       (defaults.string(forKey: Key.dictationKey)
       ?? defaults.string(forKey: Key.legacyPushToTalkKey))

@@ -118,12 +118,14 @@ final class HotkeyMonitor {
   private var localMonitor: Any?
   private var eventTap: CFMachPort?
   private var eventTapSource: CFRunLoopSource?
+  private var dictationEnabled: Bool
   private var pressed = false
   private var pressedBehavior: DictationActivationBehavior?
   private var pushToTalkActive = false
   private var hybridGesture = HybridDictationGesture()
 
   init(
+    dictationEnabled: Bool,
     key: @escaping () -> DictationKey,
     activationBehavior: @escaping () -> DictationActivationBehavior,
     onToggle: @escaping () -> Void,
@@ -137,6 +139,7 @@ final class HotkeyMonitor {
     onToggleCleanup: @escaping @MainActor @Sendable () -> Void,
     onCancel: @escaping @MainActor @Sendable () -> Void
   ) {
+    self.dictationEnabled = dictationEnabled
     self.key = key
     self.activationBehavior = activationBehavior
     self.onToggle = onToggle
@@ -155,35 +158,32 @@ final class HotkeyMonitor {
 
   func start() {
     stop()
-    globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
-      [weak self] event in
-      // AppKit guarantees event monitor callbacks arrive on the main thread.
-      MainActor.assumeIsolated { self?.handle(event) }
-    }
-    localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-      self?.handle(event)
-      return event
-    }
+    if dictationEnabled { startDictationKeyMonitors() }
     startCommandInterceptor()
   }
 
   func stop() {
-    if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
-    if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+    stopDictationKeyMonitors()
     if let eventTapSource {
       CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
     }
     commandInterceptor.setEventTap(nil)
     if let eventTap { CFMachPortInvalidate(eventTap) }
-    globalMonitor = nil
-    localMonitor = nil
     eventTap = nil
     eventTapSource = nil
-    pressed = false
-    pressedBehavior = nil
-    pushToTalkActive = false
-    hybridGesture.cancel()
     commandInterceptor.setMode(.none)
+  }
+
+  /// Off, the dictation key goes unwatched, so it's free for other apps; the screenshot shortcut
+  /// keeps working.
+  func setDictationEnabled(_ enabled: Bool) {
+    guard enabled != dictationEnabled else { return }
+    dictationEnabled = enabled
+    if enabled {
+      startDictationKeyMonitors()
+    } else {
+      stopDictationKeyMonitors()
+    }
   }
 
   func setDictationMode(_ mode: DictationKeyboardMode) {
@@ -196,6 +196,30 @@ final class HotkeyMonitor {
 
   func setScreenshotShortcut(_ shortcut: ScreenshotShortcut) {
     commandInterceptor.setScreenshotShortcut(shortcut)
+  }
+
+  private func startDictationKeyMonitors() {
+    guard globalMonitor == nil else { return }
+    globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
+      [weak self] event in
+      // AppKit guarantees event monitor callbacks arrive on the main thread.
+      MainActor.assumeIsolated { self?.handle(event) }
+    }
+    localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+      self?.handle(event)
+      return event
+    }
+  }
+
+  private func stopDictationKeyMonitors() {
+    if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+    if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+    globalMonitor = nil
+    localMonitor = nil
+    pressed = false
+    pressedBehavior = nil
+    pushToTalkActive = false
+    hybridGesture.cancel()
   }
 
   private func startCommandInterceptor() {

@@ -75,6 +75,7 @@ final class AppModel: ObservableObject {
       }
     }
     hotkey = HotkeyMonitor(
+      dictationEnabled: settings.dictationEnabled,
       key: { [settings] in settings.dictationKey },
       activationBehavior: { [settings] in settings.dictationActivationBehavior },
       onToggle: { [coordinator] in coordinator.toggleDictation() },
@@ -103,13 +104,26 @@ final class AppModel: ObservableObject {
       self?.refreshAudioDevices()
     }
     hotkey?.start()
-    modelDownloads.refresh(prepareSelectedModel: true)
-    cleanupModelDownloads.refresh(prepareSelectedModel: true)
+    modelDownloads.refresh(prepareSelectedModel: settings.dictationEnabled)
+    cleanupModelDownloads.refresh(prepareSelectedModel: settings.dictationEnabled)
     refreshPermissions()
     refreshAudioDevices()
     NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
       .sink { [weak self] _ in self?.refreshPermissions() }
       .store(in: &cancellables)
+  }
+
+  /// Applies the setting live: off frees the dictation key, the microphone and the models, and
+  /// leaves screenshots alone.
+  func setDictationEnabled(_ enabled: Bool) {
+    guard enabled != settings.dictationEnabled else { return }
+    settings.dictationEnabled = enabled
+    hotkey?.setDictationEnabled(enabled)
+    coordinator.setDictationEnabled(enabled)
+    if enabled {
+      modelDownloads.refresh(prepareSelectedModel: true)
+      cleanupModelDownloads.refresh(prepareSelectedModel: true)
+    }
   }
 
   func requestMicrophone() {

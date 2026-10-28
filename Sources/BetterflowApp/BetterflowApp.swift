@@ -34,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     NSApplication.shared.setActivationPolicy(.accessory)
     AppModel.shared.start()
     if ProcessInfo.processInfo.arguments.contains("--show-settings")
-      || !AppPermission.microphoneGranted
+      || (AppModel.shared.settings.dictationEnabled && !AppPermission.microphoneGranted)
       || !AppPermission.accessibilityGranted
     {
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
